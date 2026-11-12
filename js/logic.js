@@ -1,22 +1,15 @@
-// Matching and day-over-day rules ported from the 奔强 / 捷德 reference workbooks.
-// 无进度 = the set of process names is unchanged (order may differ). That is what
-// the verified 奔强 counts use; one model keeps the same steps in a different order.
+// Matching and day-over-day rules. Progress uses the operation sequence:
+// a higher number moved forward, the same number did not move, a lower number
+// moved backward. A name missing from that supplier's list is unordered.
 
-export const STEP_ORDER = [
-  "开料", "内层线路", "蚀刻去膜", "内层AOI", "内层钻孔", "内层电镀", "压合", "钻孔",
-  "锣金属槽", "钻半孔", "控深钻", "等离子", "沉铜", "加镀", "电镀塞孔", "内层线路1",
-  "树脂塞孔", "树脂塞孔2", "减铜", "内层线路2", "蚀刻去膜1", "内层AOI1", "沉铜1", "沉铜2",
-  "加镀2", "减铜1", "二钻", "外层线路", "外层线路1", "外层线路2", "二次干膜", "电铜锡",
-  "外层蚀刻", "蚀刻引线", "锣半孔", "三钻", "钻沉头孔", "钻沉头孔1", "外层AOI", "曝光阻焊",
-  "阻焊2", "文字", "文字2", "表面处理", "成品阻抗测试", "飞针测试", "大板V-CUT", "控深锣",
-  "控深锣1", "控深锣2", "一次锣板", "锣板", "锣板1", "小板V-CUT", "斜边", "金手指斜边",
-  "*电测", "*OSP", "*FQC", "*包装",
-];
+import { JIEDE_NAMES, catalogsFrom, compareBySequence, sequenceLabel } from "./processOrder.js";
+
+export const STEP_ORDER = JIEDE_NAMES;
 
 const ORDER_MAP = new Map(STEP_ORDER.map((name, i) => [name, i + 1]));
 
-export const MODEL_TYPES = ["工序推进", "无进度", "已出WIP", "今日新增"];
-export const ORDER_TYPES = ["工序推进", "无进度", "已出WIP", "今日新增", "未在WIP"];
+export const MODEL_TYPES = ["工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增"];
+export const ORDER_TYPES = ["工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增", "未在WIP"];
 
 export function clean(value) {
   if (value == null) return "";
@@ -148,7 +141,7 @@ function resolveBenqiangKey(order, days) {
   return { key: "", how: "未匹配" };
 }
 
-function compareModelMaps(prev, curr) {
+function compareModelMaps(prev, curr, catalog) {
   const keys = [];
   const seen = new Set();
   for (const key of prev.keys()) {
@@ -166,7 +159,7 @@ function compareModelMaps(prev, curr) {
   for (const key of keys) {
     const before = prev.get(key) || null;
     const after = curr.get(key) || null;
-    const type = classifyPresence(before && before.steps, after && after.steps, !!before, !!after);
+    const type = compareBySequence(before && before.steps, after && after.steps, !!before, !!after, catalog);
     const model = after || before;
     bump(counts, type);
     if (bySource[model.source]) bump(bySource[model.source], type);
@@ -181,6 +174,7 @@ function compareModelMaps(prev, curr) {
       orderedAt: (after || before).orderedAt || "",
       prevText: before ? joinSteps(before.steps) : "（无）",
       currText: after ? joinSteps(after.steps) : "（无）",
+      seqLabel: after ? sequenceLabel(after.steps, catalog) : "",
       prevRows: before ? before.rows : 0,
       currRows: after ? after.rows : 0,
       type,
@@ -348,11 +342,19 @@ export function jiedeMatch(order, batches) {
   for (const batch of pool) {
     for (const step of batch.steps) if (!steps.includes(step)) steps.push(step);
   }
+  const pos = [];
+  const qtys = [];
+  for (const batch of pool) {
+    if (batch.po && !pos.includes(batch.po)) pos.push(batch.po);
+    if (batch.qty && !qtys.includes(batch.qty)) qtys.push(batch.qty);
+  }
   return {
     how: sameQty.length ? "数量" : "型号",
     text: `捷德:${text}`,
     steps,
     present: true,
+    pos,
+    qty: qtys.join(" / "),
   };
 }
 
@@ -450,6 +452,85 @@ function alignBenqiangKeys(days) {
   }
 }
 
+function modelsOf(day, source) {
+  const map = new Map();
+  if (!day) return map;
+  for (const [key, model] of day.models) if (model.source === source) map.set(key, model);
+  return map;
+}
+
+function datesForSource(days, source) {
+  return days.filter((day) => [...day.models.values()].some((model) => model.source === source)).map((day) => day.date);
+}
+
+function sourceOfKey(days, key) {
+  if (!key) return "";
+  for (let index = days.length - 1; index >= 0; index -= 1) {
+    const model = days[index].models.get(key);
+    if (model && model.source) return model.source;
+  }
+  return "";
+}
+
+function compareBenqiangSources(days, orders, catalog) {
+  const parts = [];
+  for (const source of ["y099", "Y100"]) {
+    const own = days.filter((day) => [...day.models.values()].some((model) => model.source === source));
+    if (own.length < 2) continue;
+    const prev = own[own.length - 2];
+    const curr = own[own.length - 1];
+    attachOrderFlags(prev.models, orders);
+    attachOrderFlags(curr.models, orders);
+    const compared = compareModelMaps(modelsOf(prev, source), modelsOf(curr, source), catalog);
+    for (const row of compared.rows) {
+      const model = curr.models.get(row.key) || prev.models.get(row.key);
+      row.urgent = model.urgent || "";
+      row.due = model.due || "";
+      row.orderStatus = model.orderStatus || "";
+      row.prodNo = model.prodNo || "";
+      row.how = model.how || "";
+    }
+    compared.urgentStall = compared.rows.filter((row) => row.type === "无进度" && row.urgent).length;
+    parts.push({
+      source,
+      prev: prev.date,
+      curr: curr.date,
+      prevRows: prev.rowBySource[source] || 0,
+      currRows: curr.rowBySource[source] || 0,
+      ...compared,
+    });
+  }
+  if (!parts.length) return null;
+  const counts = emptyTypeCounts();
+  const bySource = { y099: emptyTypeCounts(), Y100: emptyTypeCounts() };
+  const rows = [];
+  let urgentStall = 0;
+  for (const part of parts) {
+    rows.push(...part.rows);
+    urgentStall += part.urgentStall;
+    bySource[part.source] = {
+      ...part.counts,
+      prev: part.prev,
+      curr: part.curr,
+      prevRows: part.prevRows,
+      currRows: part.currRows,
+    };
+    for (const type of MODEL_TYPES) counts[type] += part.counts[type] || 0;
+    counts.total += part.counts.total || 0;
+  }
+  return {
+    prev: parts[0].prev,
+    curr: parts[parts.length - 1].curr,
+    prevRows: { y099: bySource.y099.prevRows || 0, Y100: bySource.Y100.prevRows || 0 },
+    currRows: { y099: bySource.y099.currRows || 0, Y100: bySource.Y100.currRows || 0 },
+    pairs: parts.map((part) => ({ source: part.source, prev: part.prev, curr: part.curr })),
+    counts,
+    bySource,
+    urgentStall,
+    rows,
+  };
+}
+
 export function buildReport(records, options = {}) {
   const from = options.from || "";
   const to = options.to || "";
@@ -464,37 +545,11 @@ export function buildReport(records, options = {}) {
   alignBenqiangKeys(bqDays);
   const jdDays = jd.dates.map((date) => ({ date, ...mergeTickets(jd.map.get(date)) }));
 
+  const catalogs = catalogsFrom(options.catalogs);
   let benqiang = null;
-  if (bqDays.length >= 2) {
-    const prev = bqDays[bqDays.length - 2];
-    const curr = bqDays[bqDays.length - 1];
-    attachOrderFlags(prev.models, (bqOrders && bqOrders.orders) || []);
-    attachOrderFlags(curr.models, (bqOrders && bqOrders.orders) || []);
-    // Flags used for display come from whichever side exists. Compare reads model.urgent off the surviving side.
-    for (const [key, model] of prev.models) {
-      if (!curr.models.has(key)) {
-        const twin = curr.models.get(key);
-        if (!twin) model.urgent = model.urgent || "";
-      }
-    }
-    const compared = compareModelMaps(prev.models, curr.models);
-    // Re-apply urgent from either day so a model only present yesterday still shows the order flag.
-    for (const row of compared.rows) {
-      const model = curr.models.get(row.key) || prev.models.get(row.key);
-      row.urgent = model.urgent || "";
-      row.due = model.due || "";
-      row.orderStatus = model.orderStatus || "";
-      row.prodNo = model.prodNo || "";
-      row.how = model.how || "";
-    }
-    compared.urgentStall = compared.rows.filter((row) => row.type === "无进度" && row.urgent).length;
-    benqiang = {
-      prev: prev.date,
-      curr: curr.date,
-      prevRows: prev.rowBySource,
-      currRows: curr.rowBySource,
-      ...compared,
-    };
+  if (bqDays.length >= 1) {
+    const orders = (bqOrders && bqOrders.orders) || [];
+    benqiang = compareBenqiangSources(bqDays, orders, catalogs["奔强"]);
   }
 
   const bqDates = bq.dates.filter(inRange);
@@ -523,6 +578,9 @@ export function buildReport(records, options = {}) {
         snapshot: true,
         steps: model ? model.steps : [],
         source: model ? model.source : "",
+        sc: model ? model.sc || "" : "",
+        pn: model ? model.pn || "" : "",
+        seqLabel: model ? sequenceLabel(model.steps, catalogs["奔强"]) : "",
       };
     }
     const supplierDates = bqDates.filter((date) => date <= (asOf || "9999"));
@@ -530,15 +588,22 @@ export function buildReport(records, options = {}) {
     const previousDate = supplierDates[supplierDates.length - 2] || "";
     const latest = latestDate ? dayCells[latestDate] : null;
     const previous = previousDate ? dayCells[previousDate] : null;
-    const type = classifyPresence(
-      previous && previous.steps,
-      latest && latest.steps,
-      !!(previous && previous.present),
-      !!(latest && latest.present),
+    const ownSource = sourceOfKey(bqDays, resolved.key);
+    const ownDates = (ownSource ? datesForSource(bqDays, ownSource) : bqDates).filter(inRange);
+    const ownLatestDate = ownDates[ownDates.length - 1] || "";
+    const ownPrevDate = ownDates[ownDates.length - 2] || "";
+    const ownLatest = ownLatestDate ? dayCells[ownLatestDate] : null;
+    const ownPrevious = ownPrevDate ? dayCells[ownPrevDate] : null;
+    const type = compareBySequence(
+      ownPrevious && ownPrevious.steps,
+      ownLatest && ownLatest.steps,
+      !!(ownPrevious && ownPrevious.present),
+      !!(ownLatest && ownLatest.present),
+      catalogs["奔强"],
     );
     bump(orderCounts, type);
     if (type === "无进度" && isUrgent(order.urgent)) orderUrgentStall += 1;
-    orderRows.push(orderRow(order, "奔强", type, resolved.how, dayCells, asOf, latest && latest.text, supplierDates));
+    orderRows.push(orderRow(order, "奔强", type, resolved.how, dayCells, asOf, ownLatest && ownLatest.present ? ownLatest.text : "", ownDates, ownLatest && ownLatest.present ? sequenceLabel(ownLatest.steps, catalogs["奔强"]) : "", catalogs["奔强"]));
   }
 
   const jdMatchCounts = { 数量: 0, 型号: 0, 无在制: 0, 未匹配: 0, total: 0 };
@@ -560,6 +625,9 @@ export function buildReport(records, options = {}) {
         present: matched.present,
         snapshot: true,
         steps: matched.steps,
+        pos: matched.pos || [],
+        qty: matched.qty || "",
+        seqLabel: matched.present ? sequenceLabel(matched.steps, catalogs["捷德"]) : "",
       };
     }
     if (latestJd) {
@@ -572,13 +640,14 @@ export function buildReport(records, options = {}) {
     const previousDate = supplierDates[supplierDates.length - 2] || "";
     const latest = latestDate ? dayCells[latestDate] : null;
     const previous = previousDate ? dayCells[previousDate] : null;
-    const type = classifyPresence(
+    const type = compareBySequence(
       previous && previous.steps,
       latest && latest.steps,
       !!(previous && previous.present),
       !!(latest && latest.present),
+      catalogs["捷德"],
     );
-    orderRows.push(orderRow(order, "捷德", type, (matches[latestDate] && matches[latestDate].how) || "未匹配", dayCells, asOf, latest && (latest.detail || latest.text), supplierDates));
+    orderRows.push(orderRow(order, "捷德", type, (matches[latestDate] && matches[latestDate].how) || "未匹配", dayCells, asOf, latest && latest.present ? (latest.detail || latest.text) : "", supplierDates, latest && latest.present ? sequenceLabel(latest.steps, catalogs["捷德"]) : "", catalogs["捷德"]));
   }
 
   return {
@@ -593,7 +662,7 @@ export function buildReport(records, options = {}) {
     orderCounts,
     orderUrgentStall,
     orderRows,
-    dailyStats: dailyStats(orderRows),
+    dailyStats: dailyStats(orderRows, catalogs),
     bqOrderTotal: (bqOrders && bqOrders.orders.length) || 0,
     jdOrderTotal: (jdOrders && jdOrders.orders.length) || 0,
   };
@@ -614,16 +683,17 @@ function backfillSummary(day) {
   return { models, rows, byRule };
 }
 
-function consecutiveStall(dayCells, dates) {
+function consecutiveStall(dayCells, dates, catalog) {
   let count = 0;
   for (let index = dates.length - 1; index >= 1; index -= 1) {
     const current = dayCells[dates[index]];
     const previous = dayCells[dates[index - 1]];
-    const type = classifyPresence(
+    const type = compareBySequence(
       previous && previous.steps,
       current && current.steps,
       !!(previous && previous.present),
       !!(current && current.present),
+      catalog,
     );
     if (type !== "无进度") break;
     count += 1;
@@ -631,7 +701,7 @@ function consecutiveStall(dayCells, dates) {
   return count;
 }
 
-function dailyStats(orderRows) {
+function dailyStats(orderRows, catalogs) {
   const grouped = new Map();
   for (const row of orderRows) {
     const dates = row.supplierDates || [];
@@ -648,11 +718,12 @@ function dailyStats(orderRows) {
       const bucket = grouped.get(id);
       const current = row.dayCells[date];
       const previous = index > 0 ? row.dayCells[dates[index - 1]] : null;
-      const type = classifyPresence(
+      const type = compareBySequence(
         previous && previous.steps,
         current && current.steps,
         !!(previous && previous.present),
         !!(current && current.present),
+        catalogs[row.supplier] || catalogs["奔强"],
       );
       bump(bucket.counts, type);
       if (row.urgentFlag) bump(bucket.urgent, type);
@@ -661,8 +732,16 @@ function dailyStats(orderRows) {
   return [...grouped.values()].sort((a, b) => a.date.localeCompare(b.date) || a.supplier.localeCompare(b.supplier, "zh"));
 }
 
-function orderRow(order, supplier, type, how, dayCells, asOf, wipText, supplierDates = []) {
+function orderRow(order, supplier, type, how, dayCells, asOf, wipText, supplierDates = [], seqLabel = "", catalog) {
   const dueDays = dateDiff(order.due, asOf);
+  let wip = null;
+  for (let index = supplierDates.length - 1; index >= 0; index -= 1) {
+    const cell = dayCells[supplierDates[index]];
+    if (cell && cell.present) {
+      wip = cell;
+      break;
+    }
+  }
   return {
     supplierDates,
     supplier,
@@ -679,7 +758,15 @@ function orderRow(order, supplier, type, how, dayCells, asOf, wipText, supplierD
     type,
     how,
     wipText: wipText || "",
-    stallDays: consecutiveStall(dayCells, supplierDates),
+    stallDays: consecutiveStall(dayCells, supplierDates, catalog),
+    seqLabel,
+    po: order.po || "",
+    orderQty: order.orderQty || "",
+    orderDate: order.orderDate || "",
+    wipSc: wip ? wip.sc || "" : "",
+    wipPn: wip ? wip.pn || "" : "",
+    wipPo: wip && Array.isArray(wip.pos) ? wip.pos.filter(Boolean).join(" ") : "",
+    wipQty: wip ? wip.qty || "" : "",
     dayCells,
   };
 }

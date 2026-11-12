@@ -8,6 +8,8 @@ const HEADER = {
 const TYPE_STYLE = {
   工序推进: ["FFC6EFCE", "FF006100", false],
   无进度: ["FFFFC000", "FF9C0006", true],
+  工序回退: ["FFFECACA", "FF9F1239", true],
+  "工序变化(顺序未知)": ["FFEDE9FE", "FF5B21B6", false],
   已出WIP: ["FFD9D9D9", "FF595959", false],
   今日新增: ["FFDDEBF7", "FF1F4E78", false],
   未在WIP: ["FFF2F2F2", "FF808080", false],
@@ -118,7 +120,7 @@ function urgentOf(rows, source, type) {
 async function benqiangCompare(records, date) {
   const message = dailyStatus(records, date).benqiangCompare;
   if (message) return { error: message };
-  const report = buildReport(records, { asOf: date });
+  const report = reportAt(records, date);
   const compared = report.benqiang;
   const prevDate = compared.prev;
   const workbook = book();
@@ -131,12 +133,15 @@ async function benqiangCompare(records, date) {
   const head = summary.addRow(["变化类型", "y099", "Y100", "合计", "其中加急", "说明"]);
   paintHeader(head);
   const notes = {
-    工序推进: "工艺有变化（往下走了）",
+    工序推进: "今日顺序号比上一日大",
+    无进度: "两天最远顺序号相同",
+    工序回退: "今日顺序号比上一日小",
+    "工序变化(顺序未知)": "有工序不在顺序表里，无法比较",
     已出WIP: "昨日有、今日没有（多为完工入库/出货）",
-    无进度: "两天工艺完全一样，没有任何进度，请重点跟进",
     今日新增: "今日新出现（多为新单）",
   };
-  for (const type of ["工序推进", "已出WIP", "无进度", "今日新增"]) {
+  const summaryTypes = ["工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增"];
+  for (const type of summaryTypes) {
     const row = summary.addRow([
       type,
       countOf(compared.rows, "y099", type),
@@ -152,7 +157,7 @@ async function benqiangCompare(records, date) {
   const y099Curr = latestFile(records, "奔强", date, "y099");
   const y100Prev = latestFile(records, "奔强", prevDate, "Y100");
   const y100Curr = latestFile(records, "奔强", date, "Y100");
-  const total = summary.addRow(["合计", countOf(compared.rows, "y099", "工序推进") + countOf(compared.rows, "y099", "已出WIP") + countOf(compared.rows, "y099", "无进度") + countOf(compared.rows, "y099", "今日新增"), countOf(compared.rows, "Y100", "工序推进") + countOf(compared.rows, "Y100", "已出WIP") + countOf(compared.rows, "Y100", "无进度") + countOf(compared.rows, "Y100", "今日新增"), compared.rows.length, compared.rows.filter((row) => row.urgent).length]);
+  const total = summary.addRow(["合计", summaryTypes.reduce((sum, type) => sum + countOf(compared.rows, "y099", type), 0), summaryTypes.reduce((sum, type) => sum + countOf(compared.rows, "Y100", type), 0), compared.rows.length, compared.rows.filter((row) => row.urgent).length]);
   total.font = { bold: true };
   summary.addRow([]);
   summary.addRow(["加急且无进度", compared.rows.filter((row) => row.type === "无进度" && row.urgent).length]);
@@ -270,7 +275,7 @@ function writeGuide(ws, lines) {
 async function benqiangMatch(records, date) {
   const message = dailyStatus(records, date).benqiangMatch;
   if (message) return { error: message };
-  const report = buildReport(records, { asOf: date });
+  const report = reportAt(records, date);
   const byProd = new Map(report.orderRows.filter((row) => row.supplier === "奔强").map((row) => [row.prodNo, row]));
   const bookOrders = records.filter((record) => record.supplier === "奔强" && record.kind === "order" && (!record.date || record.date <= date))
     .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.importedAt).localeCompare(String(b.importedAt))).pop();
@@ -332,7 +337,7 @@ async function benqiangMatch(records, date) {
 async function jiedeMatchBook(records, date) {
   const message = dailyStatus(records, date).jiedeMatch;
   if (message) return { error: message };
-  const report = buildReport(records, { asOf: date });
+  const report = reportAt(records, date);
   const byProd = new Map(report.orderRows.filter((row) => row.supplier === "捷德").map((row) => [row.prodNo, row]));
   const bookOrders = records.filter((record) => record.supplier === "捷德" && record.kind === "order" && (!record.date || record.date <= date))
     .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.importedAt).localeCompare(String(b.importedAt))).pop();
@@ -372,7 +377,7 @@ const RISK_ORDER = ["高风险", "关注", "正常", "新增", "消失", "无在
 async function jiedeTriBook(records, date) {
   const message = dailyStatus(records, date).jiedeTri;
   if (message) return { error: message };
-  const report = buildReport(records, { asOf: date });
+  const report = reportAt(records, date);
   const tri = report.jiede;
   const workbook = book();
   const compare = workbook.addWorksheet("对比");
@@ -478,7 +483,14 @@ function writeJiedeMatrix(ws, file, wideFreeze) {
   widths(ws, [18, 10, 18, 12, 16, 18, 14, 8, 12, 12, 12, 12, 12]);
 }
 
-export async function buildDailyWorkbook(records, date, kind) {
+let activeCatalogs = null;
+
+function reportAt(records, date) {
+  return buildReport(records, { asOf: date, catalogs: activeCatalogs });
+}
+
+export async function buildDailyWorkbook(records, date, kind, catalogs) {
+  activeCatalogs = catalogs || null;
   try {
     if (kind === "benqiangCompare") return await benqiangCompare(records, date);
     if (kind === "benqiangMatch") return await benqiangMatch(records, date);
@@ -490,14 +502,15 @@ export async function buildDailyWorkbook(records, date, kind) {
   }
 }
 
-export async function buildDailyZip(records, date) {
+export async function buildDailyZip(records, date, catalogs) {
+  activeCatalogs = catalogs || null;
   const fflate = globalThis.fflate;
   if (!fflate) return { error: "打包组件未加载" };
   const kinds = ["benqiangCompare", "benqiangMatch", "jiedeMatch", "jiedeTri"];
   const files = {};
   const errors = [];
   for (const kind of kinds) {
-    const result = await buildDailyWorkbook(records, date, kind);
+    const result = await buildDailyWorkbook(records, date, kind, activeCatalogs);
     if (result.error) errors.push(result.error);
     else files[result.filename] = new Uint8Array(result.buffer);
   }

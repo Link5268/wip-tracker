@@ -1,14 +1,18 @@
 const DB_NAME = "hx-wip-tracker";
 const STORE = "files";
 const STARS = "stars";
+const NOTES = "notes";
+const PROCESS = "processOrders";
 
 function openDb() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 2);
+    const request = indexedDB.open(DB_NAME, 3);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "id" });
       if (!db.objectStoreNames.contains(STARS)) db.createObjectStore(STARS, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(NOTES)) db.createObjectStore(NOTES, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(PROCESS)) db.createObjectStore(PROCESS, { keyPath: "supplier" });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -100,11 +104,74 @@ export async function replaceStars(stars) {
   db.close();
 }
 
+async function getAll(storeName) {
+  const db = await openDb();
+  const request = db.transaction(storeName, "readonly").objectStore(storeName).getAll();
+  const rows = await new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+  db.close();
+  return rows;
+}
+
+export async function listNotes() {
+  return getAll(NOTES);
+}
+
+export async function putNote(note) {
+  const db = await openDb();
+  const tx = db.transaction(NOTES, "readwrite");
+  tx.objectStore(NOTES).put(note);
+  await txDone(tx);
+  db.close();
+}
+
+export async function replaceNotes(notes) {
+  const db = await openDb();
+  const tx = db.transaction(NOTES, "readwrite");
+  tx.objectStore(NOTES).clear();
+  for (const note of notes) tx.objectStore(NOTES).put(note);
+  await txDone(tx);
+  db.close();
+}
+
+export async function listProcessOrders() {
+  return getAll(PROCESS);
+}
+
+export async function saveProcessOrder(supplier, items) {
+  const db = await openDb();
+  const tx = db.transaction(PROCESS, "readwrite");
+  tx.objectStore(PROCESS).put({ supplier, items, updatedAt: new Date().toISOString() });
+  await txDone(tx);
+  db.close();
+}
+
+export async function deleteProcessOrder(supplier) {
+  const db = await openDb();
+  const tx = db.transaction(PROCESS, "readwrite");
+  tx.objectStore(PROCESS).delete(supplier);
+  await txDone(tx);
+  db.close();
+}
+
+export async function replaceProcessOrders(rows) {
+  const db = await openDb();
+  const tx = db.transaction(PROCESS, "readwrite");
+  tx.objectStore(PROCESS).clear();
+  for (const row of rows) tx.objectStore(PROCESS).put(row);
+  await txDone(tx);
+  db.close();
+}
+
 export async function clearAll() {
   const db = await openDb();
-  const tx = db.transaction([STORE, STARS], "readwrite");
+  const tx = db.transaction([STORE, STARS, NOTES, PROCESS], "readwrite");
   tx.objectStore(STORE).clear();
   tx.objectStore(STARS).clear();
+  tx.objectStore(NOTES).clear();
+  tx.objectStore(PROCESS).clear();
   await txDone(tx);
   db.close();
 }

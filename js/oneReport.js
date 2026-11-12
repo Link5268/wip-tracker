@@ -1,5 +1,6 @@
-import { classifyPresence, joinSteps } from "./logic.js";
+import { classifyPresence, dateDiff, joinSteps } from "./logic.js";
 import { indexEntities, matchOrder, normKey } from "./lenient.js";
+import { catalogsFrom, compareBySequence, sequenceLabel } from "./processOrder.js";
 
 const HEADER = {
   fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FF305496" } },
@@ -9,10 +10,14 @@ const HEADER = {
 const TYPE_STYLE = {
   工序推进: ["FFC6EFCE", "FF006100", false],
   无进度: ["FFFFC000", "FF9C0006", true],
+  工序回退: ["FFFECACA", "FF9F1239", true],
+  "工序变化(顺序未知)": ["FFEDE9FE", "FF5B21B6", false],
   已出WIP: ["FFD9D9D9", "FF595959", false],
   今日新增: ["FFDDEBF7", "FF1F4E78", false],
   未在WIP: ["FFF2F2F2", "FF808080", false],
 };
+
+const SUMMARY_TYPES = ["工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增"];
 
 function datesOf(records, supplier) {
   return [...new Set(records.filter((record) => record.supplier === supplier && record.kind === "wip" && record.date).map((record) => record.date))].sort();
@@ -111,7 +116,19 @@ function present(steps) {
   return Array.isArray(steps);
 }
 
-function verdict(dates, stepsByDate) {
+function verdict(dates, stepsByDate, catalog) {
+  if (!dates.length) return "未在WIP";
+  const current = dates[dates.length - 1];
+  const previous = dates.length > 1 ? dates[dates.length - 2] : null;
+  const onCurrent = present(stepsByDate[current]);
+  const onPrevious = previous ? present(stepsByDate[previous]) : false;
+  if (!onCurrent && !onPrevious) {
+    return dates.slice(0, -1).some((day) => present(stepsByDate[day])) ? "已出WIP" : "未在WIP";
+  }
+  return compareBySequence(previous ? stepsByDate[previous] : null, stepsByDate[current], onPrevious, onCurrent, catalog);
+}
+
+function setVerdict(dates, stepsByDate) {
   if (!dates.length) return "未在WIP";
   const current = dates[dates.length - 1];
   const previous = dates.length > 1 ? dates[dates.length - 2] : null;
@@ -121,6 +138,12 @@ function verdict(dates, stepsByDate) {
     return dates.slice(0, -1).some((day) => present(stepsByDate[day])) ? "已出WIP" : "未在WIP";
   }
   return classifyPresence(previous ? stepsByDate[previous] : null, stepsByDate[current], onPrevious, onCurrent);
+}
+
+function todaySeq(dates, stepsByDate, catalog) {
+  const current = dates[dates.length - 1];
+  if (!current || !present(stepsByDate[current])) return "";
+  return sequenceLabel(stepsByDate[current], catalog);
 }
 
 function stepText(steps) {
@@ -157,7 +180,8 @@ function addBenqiangSource(records, date, subtype, entities) {
   return window;
 }
 
-export function buildCombinedTables(records, date) {
+export function buildCombinedTables(records, date, catalogOverrides) {
+  const catalogs = catalogsFrom(catalogOverrides);
   const entities = [];
   const y099 = addBenqiangSource(records, date, "y099", entities);
   const y100 = addBenqiangSource(records, date, "Y100", entities);
@@ -227,7 +251,11 @@ export function buildCombinedTables(records, date) {
       part: entity.customer === "奔强" ? entity.pn : entity.productNo,
       model: entity.cm,
       days: cells,
-      type: verdict(dates, entity.stepsByDate),
+      type: verdict(dates, entity.stepsByDate, catalogs[entity.customer]),
+      setType: setVerdict(dates, entity.stepsByDate),
+      seqLabel: todaySeq(dates, entity.stepsByDate, catalogs[entity.customer]),
+      prevSteps: dates.length > 1 ? entity.stepsByDate[dates[dates.length - 2]] : null,
+      currSteps: entity.stepsByDate[dates[dates.length - 1]] || null,
     };
   });
 
@@ -243,9 +271,12 @@ export function buildCombinedTables(records, date) {
       const trail = orderTrail(found.entities);
       const dates = trail.dates;
       const stepsByDate = trail.stepsByDate;
-      const type = found.matched ? verdict(dates, stepsByDate) : "未在WIP";
+      const catalog = catalogs[supplier];
+      const type = found.matched ? verdict(dates, stepsByDate, catalog) : "未在WIP";
+      const sources = [...new Set(found.entities.map((entity) => entity.source).filter(Boolean))];
       orders.push({
         customer: supplier,
+        source: sources.join("+"),
         urgent: order.urgent || "",
         prodNo: order.prodNo,
         custModel: order.custModel,
@@ -254,12 +285,21 @@ export function buildCombinedTables(records, date) {
         due: order.due || "",
         status: order.status || "",
         factoryCode: order.factoryCode || "",
+        po: order.po || "",
         basis: found.basis,
         many: found.many,
         type,
+        setType: found.matched ? setVerdict(dates, stepsByDate) : "未在WIP",
+        seqLabel: found.matched ? todaySeq(dates, stepsByDate, catalog) : "",
+        wipQty: [...new Set(found.entities.map((entity) => entity.qty).filter(Boolean))].join(" / "),
         days: [0, 1, 2].map((index) => {
           const day = dates[index];
-          return { date: day || "", text: day && stepsByDate[day] ? stepText(stepsByDate[day]) : "" };
+          const steps = day ? stepsByDate[day] : null;
+          return {
+            date: day || "",
+            text: steps ? stepText(steps) : "",
+            seq: steps ? sequenceLabel(steps, catalog) : "",
+          };
         }),
       });
     }
@@ -293,15 +333,19 @@ function orderTrail(entities) {
   const dates = [...new Set(entities.flatMap((entity) => entity.dates || []))].sort().slice(-3);
   const stepsByDate = {};
   for (const day of dates) {
-    const texts = [];
+    const steps = [];
+    const seen = new Set();
     let saw = false;
     for (const entity of entities) {
       if (!(entity.dates || []).includes(day) || !present(entity.stepsByDate[day])) continue;
       saw = true;
-      const text = stepText(entity.stepsByDate[day]);
-      if (text) texts.push(text);
+      for (const step of entity.stepsByDate[day] || []) {
+        if (seen.has(step)) continue;
+        seen.add(step);
+        steps.push(step);
+      }
     }
-    if (saw) stepsByDate[day] = texts;
+    if (saw) stepsByDate[day] = steps;
   }
   return { dates, stepsByDate };
 }
@@ -341,21 +385,29 @@ function freeze(ws) {
   ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: Math.max(2, ws.rowCount), column: ws.columnCount || 1 } };
 }
 
-export async function buildOneDaily(records, date) {
+function dailyOptions(value) {
+  if (!value) return {};
+  if (value.catalogs || value.stars || value.notes) return value;
+  return { catalogs: value };
+}
+
+export async function buildOneDaily(records, date, options) {
   if (!date) return { error: "请先选择日期" };
-  const tables = buildCombinedTables(records, date);
+  const settings = dailyOptions(options);
+  const tables = buildCombinedTables(records, date, settings.catalogs);
   if (!tables.windows.y099.length && !tables.windows.Y100.length && !tables.windows.捷德310.length) return { error: `没有 ${date} 及之前的 WIP` };
   const book = workbook();
   writeSummary(book.addWorksheet("汇总"), tables);
   writeRaw(book, tables);
   writeProgress(book.addWorksheet("WIP进度对比"), tables);
   writeOrders(book.addWorksheet("订单WIP进度"), tables);
+  writeFocus(book.addWorksheet("重点订单"), tables, settings);
   const buffer = await book.xlsx.writeBuffer();
   return { filename: `WIP日报_${date}.xlsx`, buffer, tables };
 }
 
 function writeSummary(ws, tables) {
-  paintHeader(ws.addRow(["客户", "来源", "工序推进", "无进度", "已出WIP", "今日新增", "型号数"]));
+  paintHeader(ws.addRow(["客户", "来源", ...SUMMARY_TYPES, "型号数"]));
   for (const customer of ["奔强", "捷德"]) {
     const sources = [...new Set(tables.progress.filter((row) => row.customer === customer).map((row) => row.source))];
     for (const source of sources) {
@@ -363,10 +415,7 @@ function writeSummary(ws, tables) {
       ws.addRow([
         customer,
         source,
-        rows.filter((row) => row.type === "工序推进").length,
-        rows.filter((row) => row.type === "无进度").length,
-        rows.filter((row) => row.type === "已出WIP").length,
-        rows.filter((row) => row.type === "今日新增").length,
+        ...SUMMARY_TYPES.map((type) => rows.filter((row) => row.type === type).length),
         rows.length,
       ]);
     }
@@ -384,8 +433,8 @@ function writeSummary(ws, tables) {
     ]);
   }
   ws.addRow([]);
-  ws.addRow([`各来源用自己最近的有文件的日期做当天。y099 ${tables.windows.y099.join("、") || "无"}；Y100 ${tables.windows.Y100.join("、") || "无"}；捷德 ${tables.windows.捷德310.join("、") || "无"}`]);
-  widths(ws, [12, 12, 12, 12, 12, 12, 12]);
+  ws.addRow([`各来源用自己最近的有文件的日期做当天。y099 ${tables.windows.y099.join("、") || "无"}；Y100 ${tables.windows.Y100.join("、") || "无"}；捷德 ${tables.windows.捷德310.join("、") || "无"}。进度按工序顺序号比较。工程暂定第 0 道，仓库暂定第 999 道（视为完工），外发和 PCBA 顺序未知，等 Jay 确认。`]);
+  widths(ws, [12, 12, 12, 12, 14, 18, 12, 12, 12]);
   ws.views = [{ state: "frozen", ySplit: 1, topLeftCell: "A2" }];
 }
 
@@ -430,27 +479,27 @@ function writeRaw(book, tables) {
 }
 
 function writeProgress(ws, tables) {
-  paintHeader(ws.addRow(["客户", "来源", "型号或投产单号", "料号或产品编号", "客户型号", "第1天", "第1天工序", "第2天", "第2天工序", "第3天", "第3天工序", "进度"]));
+  paintHeader(ws.addRow(["客户", "来源", "型号或投产单号", "料号或产品编号", "客户型号", "第1天", "第1天工序", "第2天", "第2天工序", "第3天", "第3天工序", "进度", "今日工序顺序"]));
   for (const row of tables.progress) {
     const added = ws.addRow([
       row.customer, row.source, row.code, row.part, row.model,
-      row.days[0].date, row.days[0].text, row.days[1].date, row.days[1].text, row.days[2].date, row.days[2].text, row.type,
+      row.days[0].date, row.days[0].text, row.days[1].date, row.days[1].text, row.days[2].date, row.days[2].text, row.type, row.seqLabel || "",
     ]);
     paintType(added.getCell(12), row.type);
-    if (row.type === "无进度") {
+    if (row.type === "无进度" || row.type === "工序回退") {
       for (const column of [7, 9, 11]) paintType(added.getCell(column), row.type);
     }
   }
   freeze(ws);
-  widths(ws, [10, 10, 18, 16, 24, 12, 28, 12, 28, 12, 28, 12]);
+  widths(ws, [10, 10, 18, 16, 24, 12, 28, 12, 28, 12, 28, 18, 16]);
 }
 
 function writeOrders(ws, tables) {
-  paintHeader(ws.addRow(["客户", "加急", "生产编号", "客户型号", "数量", "下单日", "交期", "状态", "厂编", "匹配依据", "一对多", "进度", "第1天", "第1天工序", "第2天", "第2天工序", "第3天", "第3天工序"]));
+  paintHeader(ws.addRow(["客户", "加急", "生产编号", "客户型号", "数量", "下单日", "交期", "状态", "厂编", "匹配依据", "一对多", "进度", "今日工序顺序", "第1天", "第1天工序", "第2天", "第2天工序", "第3天", "第3天工序"]));
   for (const row of tables.orders) {
     const added = ws.addRow([
       row.customer, row.urgent, row.prodNo, row.custModel, row.qty, row.orderDate, row.due, row.status, row.factoryCode,
-      row.basis, row.many ? "一对多" : "", row.type,
+      row.basis, row.many ? "一对多" : "", row.type, row.seqLabel || "",
       row.days[0].date, row.days[0].text, row.days[1].date, row.days[1].text, row.days[2].date, row.days[2].text,
     ]);
     paintType(added.getCell(12), row.type);
@@ -458,5 +507,95 @@ function writeOrders(ws, tables) {
     if (row.many) added.getCell(11).font = { bold: true, color: { argb: "FF9C5700" } };
   }
   freeze(ws);
-  widths(ws, [10, 10, 16, 24, 10, 12, 12, 10, 16, 22, 10, 12, 12, 28, 12, 28, 12, 28]);
+  widths(ws, [10, 10, 16, 24, 10, 12, 12, 10, 16, 22, 10, 18, 16, 12, 28, 12, 28, 12, 28]);
+}
+
+function starred(stars, id) {
+  if (!stars) return false;
+  if (typeof stars.has === "function") return stars.has(id);
+  return Boolean(stars[id]);
+}
+
+function noteOf(notes, id) {
+  if (!notes) return "";
+  if (typeof notes.get === "function") return notes.get(id) || "";
+  return notes[id] || "";
+}
+
+function urgentText(value) {
+  const text = String(value || "").trim();
+  return text === "加急" || text.startsWith("急");
+}
+
+function writeFocus(ws, tables, settings) {
+  paintHeader(ws.addRow(["关注", "加急", "客户", "生产编号", "客户型号", "客户PO", "厂编", "订单数量", "在制数量", "下单日", "交期", "距交期天数", "进度", "今日工序顺序", "匹配依据", "跟进备注", "第1天", "第1天工序", "第1天顺序", "第2天", "第2天工序", "第2天顺序", "第3天", "第3天工序", "第3天顺序"]));
+  const picked = tables.orders.filter((row) => {
+    const id = `${row.customer}|${row.prodNo}`;
+    return urgentText(row.urgent) || starred(settings.stars, id);
+  });
+  for (const row of picked) {
+    const id = `${row.customer}|${row.prodNo}`;
+    const dueDays = dateDiff(row.due, tables.date);
+    const added = ws.addRow([
+      starred(settings.stars, id) ? "我关注的" : "",
+      row.urgent || "",
+      row.customer,
+      row.prodNo,
+      row.custModel,
+      row.po || "",
+      row.factoryCode,
+      row.qty,
+      row.wipQty || "",
+      row.orderDate,
+      row.due,
+      dueDays == null ? "" : dueDays,
+      row.type,
+      row.seqLabel || "",
+      row.basis,
+      noteOf(settings.notes, id),
+      row.days[0].date, row.days[0].text, row.days[0].seq || "",
+      row.days[1].date, row.days[1].text, row.days[1].seq || "",
+      row.days[2].date, row.days[2].text, row.days[2].seq || "",
+    ]);
+    paintType(added.getCell(13), row.type);
+    if (row.urgent) added.getCell(2).font = { bold: true, color: { argb: "FFC00000" } };
+    if (dueDays != null && dueDays <= 3) added.getCell(12).font = { bold: true, color: { argb: "FF9F1239" } };
+  }
+  freeze(ws);
+  widths(ws, [12, 10, 10, 16, 24, 18, 16, 12, 12, 12, 12, 12, 18, 16, 18, 24, 12, 22, 14, 12, 22, 14, 12, 22, 14]);
+}
+
+export async function buildSearchWorkbook(rows) {
+  const book = workbook();
+  const ws = book.addWorksheet("重点订单查询");
+  paintHeader(ws.addRow(["关注", "加急", "客户", "生产编号", "客户型号", "客户PO", "生产型号", "厂编", "投产单号", "客户料号", "订单数量", "在制数量", "下单日", "交期", "距交期天数", "进度", "今日工序顺序", "匹配依据", "跟进备注"]));
+  for (const row of rows) {
+    const added = ws.addRow([
+      row.starred ? "我关注的" : "",
+      row.urgent || "",
+      row.supplier,
+      row.prodNo,
+      row.custModel,
+      row.po || "",
+      row.wipSc || "",
+      row.factoryCode || "",
+      row.wipPo || "",
+      row.wipPn || "",
+      row.orderQty || row.outQty || "",
+      row.wipQty || "",
+      row.orderDate || "",
+      row.due || "",
+      row.dueDays == null ? "" : row.dueDays,
+      row.type,
+      row.seqLabel || "",
+      row.how || "",
+      row.note || "",
+    ]);
+    paintType(added.getCell(16), row.type);
+    if (row.dueDays != null && row.dueDays <= 3) added.getCell(15).font = { bold: true, color: { argb: "FF9F1239" } };
+  }
+  freeze(ws);
+  widths(ws, [12, 10, 10, 16, 24, 18, 16, 16, 16, 16, 12, 12, 12, 12, 12, 18, 16, 18, 28]);
+  const buffer = await book.xlsx.writeBuffer();
+  return { filename: "重点订单查询.xlsx", buffer };
 }
