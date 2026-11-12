@@ -2,6 +2,7 @@ import { buildReport, compareFocus, dueBucket, MODEL_TYPES, ORDER_TYPES } from "
 import { parseWorkbook } from "./parse.js";
 import { buildFocusWorkbook, buildStatsWorkbook, workbookBytes } from "./export.js";
 import { buildDailyWorkbook, buildDailyZip, dailyStatus } from "./daily.js";
+import { buildOneDaily } from "./oneReport.js";
 import { listFiles, listStars, putStar, deleteStar, replaceStars, putFile, deleteFile, replaceAll, clearAll, sha256, starId } from "./db.js";
 
 const app = document.querySelector("#app");
@@ -157,6 +158,8 @@ function bind() {
   });
   const dailyAll = document.querySelector("#daily-all");
   if (dailyAll) dailyAll.addEventListener("click", () => downloadDaily("all"));
+  const dailyOne = document.querySelector("#daily-one");
+  if (dailyOne) dailyOne.addEventListener("click", () => downloadDaily("one"));
   document.querySelectorAll("[data-star]").forEach((button) => {
     button.addEventListener("click", async () => {
       const id = button.dataset.star;
@@ -553,16 +556,20 @@ function dailyPanel(report) {
     ["jiedeTri", "捷德三日进度对比", status.jiedeTri],
   ];
   return `<section class="card stack">
-    <h2>生成日报表格</h2>
-    <p class="help">按所选日期生成本来手工做的四份工作簿，列、冻结和进度底色与原来的模板一致。文件在本机生成，不会上传。缺数据时会说明缺哪一天，不会中断页面。</p>
+    <h2>生成日报 Excel</h2>
+    <p class="help">导入最多连续三天的原始表后，点下面的按钮下载一份工作簿：今日原始 WIP、捷德和奔强合在一张表里的进度对比、以及合并后的订单匹配。文件在本机生成，不会上传。</p>
     <div class="filters">
       <label class="field">日期<input id="daily-date" type="date" value="${esc(date)}"></label>
-      <button type="button" id="daily-all" ${date ? "" : "disabled"}>下载全部</button>
+      <button type="button" id="daily-one" ${date ? "" : "disabled"}>生成日报 Excel</button>
     </div>
-    <div class="row-actions">
-      ${buttons.map(([kind, label, missing]) => `<button type="button" data-daily="${kind}" ${missing ? "disabled" : ""}>${label}</button>`).join("")}
-    </div>
-    <div class="log">${buttons.filter((item) => item[2]).map((item) => `<div class="bad">${esc(item[1])}：${esc(item[2])}</div>`).join("") || `<div>四份表都可以生成。</div>`}</div>
+    <details>
+      <summary>更多：分开下载原来的四份表</summary>
+      <div class="row-actions">
+        <button type="button" id="daily-all" ${date ? "" : "disabled"}>下载全部旧表</button>
+        ${buttons.map(([kind, label, missing]) => `<button type="button" data-daily="${kind}" ${missing ? "disabled" : ""}>${label}</button>`).join("")}
+      </div>
+      <div class="log">${buttons.filter((item) => item[2]).map((item) => `<div class="bad">${esc(item[1])}：${esc(item[2])}</div>`).join("")}</div>
+    </details>
   </section>`;
 }
 
@@ -661,7 +668,9 @@ async function downloadDaily(kind) {
   if (!date) return;
   const result = kind === "all"
     ? await buildDailyZip(state.records, date)
-    : await buildDailyWorkbook(state.records, date, kind);
+    : kind === "one"
+      ? await buildOneDaily(state.records, date)
+      : await buildDailyWorkbook(state.records, date, kind);
   if (result.error && !result.buffer) {
     state.log.push({ kind: "bad", text: result.error });
     state.tab = "import";
