@@ -65,6 +65,11 @@ function findHeader(rows, required) {
   return -1;
 }
 
+function cellAt(row, index) {
+  if (index == null || index < 0) return "";
+  return row[index];
+}
+
 function supplierOf(name) {
   const text = clean(name);
   if (text.includes("奔强")) return "奔强";
@@ -72,15 +77,24 @@ function supplierOf(name) {
   return "";
 }
 
-function benqiangSource(rows, sheetName) {
+function benqiangSource(rows, sheetName, filename, headerIndex, scCol) {
   const head = [sheetName, rows[0] && rows[0][0], rows[1] && rows[1][0]].map((item) => clean(item).toUpperCase()).join(" ");
   if (head.includes("Y100")) return "Y100";
   if (head.includes("Y099")) return "y099";
+  for (let index = headerIndex + 1; index < Math.min(rows.length, headerIndex + 12); index += 1) {
+    const sc = clean(cellAt(rows[index] || [], scCol)).toUpperCase();
+    if (sc.startsWith("Y100")) return "Y100";
+    if (sc.startsWith("Y099")) return "y099";
+  }
+  const file = clean(filename).toUpperCase();
+  if (file.includes("Y100")) return "Y100";
+  if (file.includes("Y099")) return "y099";
   return "y099";
 }
 
-function parseBenqiang(rows, sheetName) {
-  const headerIndex = findHeader(rows, ["生产型号", "客户料号", "工艺名称"]);
+function parseBenqiang(rows, sheetName, filename) {
+  // 客户料号、客户PO、备注、下单时间 are optional. Some Y100 exports only have six columns.
+  const headerIndex = findHeader(rows, ["生产型号", "工艺名称"]);
   if (headerIndex < 0) return null;
   const header = (rows[headerIndex] || []).map(clean);
   const col = {
@@ -91,15 +105,15 @@ function parseBenqiang(rows, sheetName) {
     po: header.indexOf("客户PO"),
     time: header.indexOf("下单时间"),
   };
-  const source = benqiangSource(rows, sheetName);
+  const source = benqiangSource(rows, sheetName, filename, headerIndex, col.sc);
   const models = new Map();
   let rowCount = 0;
   for (let index = headerIndex + 1; index < rows.length; index += 1) {
     const row = rows[index] || [];
-    const sc = clean(row[col.sc]);
+    const sc = clean(cellAt(row, col.sc));
     if (!sc || sc === "生产型号" || sc.includes("WIP记录")) continue;
-    const pn = clean(row[col.pn]);
-    const step = clean(row[col.step]) || "(无工艺)";
+    const pn = clean(cellAt(row, col.pn));
+    const step = clean(cellAt(row, col.step)) || "(无工艺)";
     const key = `${source}|${sc.toUpperCase()}|${pn.toUpperCase()}`;
     let model = models.get(key);
     if (!model) {
@@ -110,9 +124,10 @@ function parseBenqiang(rows, sheetName) {
         pn,
         pnU: pn.toUpperCase(),
         scU: sc.toUpperCase(),
-        cm: clean(row[col.cm]),
-        po: clean(row[col.po]),
-        orderedAt: asStamp(row[col.time]),
+        cm: clean(cellAt(row, col.cm)),
+        po: clean(cellAt(row, col.po)),
+        orderedAt: asStamp(cellAt(row, col.time)),
+        pnFrom: pn ? "sheet" : "missing",
         steps: [],
         rows: 0,
       };
@@ -132,27 +147,61 @@ function parseBenqiang(rows, sheetName) {
   };
 }
 
+function processSpan(header) {
+  const indexes = [];
+  header.forEach((name, index) => {
+    if (ORDER_MAP.has(name)) indexes.push(index);
+  });
+  if (!indexes.length) return null;
+  return { start: Math.min(...indexes), end: Math.max(...indexes) };
+}
+
+function poColumn(header, rows, headerIndex) {
+  const labeled = header.indexOf("投产单号");
+  const sample = [];
+  for (let index = headerIndex + 1; index < Math.min(rows.length, headerIndex + 40); index += 1) sample.push(rows[index] || []);
+  const scoreOf = (column) => sample.reduce((score, row) => {
+    const text = clean(row[column]);
+    if (/^JK/i.test(text)) return score + 5;
+    return score;
+  }, 0);
+  let best = labeled;
+  let bestScore = labeled >= 0 ? scoreOf(labeled) : -1;
+  const width = Math.max(header.length, 0, ...sample.map((row) => row.length));
+  for (let column = 0; column < Math.min(width, 12); column += 1) {
+    const score = scoreOf(column);
+    if (score > bestScore) {
+      bestScore = score;
+      best = column;
+    }
+  }
+  return bestScore > 0 ? best : Math.max(labeled, 0);
+}
+
 function parseJiede(rows) {
-  const headerIndex = findHeader(rows, ["投产单号", "客户型号", "开料"]);
+  // 开料 is one process column, not a required marker. 销售合同数量 and the due dates are optional.
+  const headerIndex = findHeader(rows, ["投产单号", "客户型号"]);
   if (headerIndex < 0) return null;
   const header = (rows[headerIndex] || []).map(clean);
-  const start = header.indexOf("开料");
+  const span = processSpan(header);
+  if (!span) return null;
   const modelCol = header.indexOf("客户型号");
   const qtyCol = header.indexOf("销售合同数量");
   const dueCol = header.indexOf("最新交期");
   const shipCol = header.indexOf("交货日期");
+  const poCol = poColumn(header, rows, headerIndex);
   const names = [];
-  for (let offset = 0; offset < 62; offset += 1) names.push(header[start + offset] || "");
+  for (let index = span.start; index <= span.end; index += 1) names.push(header[index] || "");
   const batches = [];
   const tickets = [];
   let rowCount = 0;
   for (let index = headerIndex + 1; index < rows.length; index += 1) {
     const row = rows[index] || [];
-    const model = clean(row[modelCol]);
+    const model = clean(cellAt(row, modelCol));
     if (!model || model === "客户型号") continue;
-    const po = clean(row[2]) || clean(row[header.indexOf("投产单号")]);
+    const po = clean(cellAt(row, poCol));
     const raw = [];
-    for (let offset = 0; offset < 62; offset += 1) raw.push(row[start + offset] ?? "");
+    for (let offset = 0; offset < names.length; offset += 1) raw.push(row[span.start + offset] ?? "");
     const sigValues = [];
     const hits = [];
     names.forEach((name, offset) => {
@@ -172,7 +221,7 @@ function parseJiede(rows) {
       model,
       modelKey,
       modelKeyU: modelKey.toUpperCase(),
-      qty: clean(cellText(row[qtyCol])),
+      qty: clean(cellText(cellAt(row, qtyCol))),
       display: columnDisplay(hits),
       steps: dedupe(hits.map((hit) => hit.name)),
     };
@@ -184,7 +233,7 @@ function parseJiede(rows) {
       model,
       modelKey,
       qty: batch.qty,
-      due: asDate(row[dueCol]) || asDate(row[shipCol]),
+      due: asDate(cellAt(row, dueCol)) || asDate(cellAt(row, shipCol)),
       far: farHit ? farHit.order : 0,
       near,
       nproc: known.length,
@@ -229,32 +278,33 @@ function modelKeyOf(value) {
 }
 
 function parseOrders(rows) {
-  const headerIndex = findHeader(rows, ["生产编号", "外发交期", "供应商"]);
+  // 外发交期、厂编、客户型号 and the quantity columns are optional. Supplier still decides 奔强 vs 捷德.
+  const headerIndex = findHeader(rows, ["生产编号", "供应商"]);
   if (headerIndex < 0) return [];
   const header = (rows[headerIndex] || []).map(clean);
   const col = (name) => header.indexOf(name);
   const groups = new Map();
   for (let index = headerIndex + 1; index < rows.length; index += 1) {
     const row = rows[index] || [];
-    const prodNo = clean(row[col("生产编号")]);
+    const prodNo = clean(cellAt(row, col("生产编号")));
     if (!prodNo || prodNo === "生产编号") continue;
-    const supplier = supplierOf(row[col("供应商")]) || "未识别";
+    const supplier = supplierOf(cellAt(row, col("供应商"))) || "未识别";
     if (!groups.has(supplier)) groups.set(supplier, []);
     groups.get(supplier).push({
-      urgent: clean(row[col("加急")]),
+      urgent: clean(cellAt(row, col("加急"))),
       prodNo,
-      customer: clean(row[col("客户")]),
-      custModel: clean(row[col("客户型号")]),
-      status: clean(row[col("状态")]),
-      due: asDate(row[col("外发交期")]),
-      outDate: asDate(row[col("外发日期")]),
-      orderDate: asDate(row[col("下单日期")]),
-      outQty: clean(cellText(row[col("外发数量")])),
-      orderQty: clean(cellText(row[col("订单数量")])),
-      factoryCode: clean(row[col("供应商厂编")]),
-      supplierName: clean(row[col("供应商")]),
-      salesman: clean(row[col("业务经理")]),
-      po: clean(row[col("客户PO")]),
+      customer: clean(cellAt(row, col("客户"))),
+      custModel: clean(cellAt(row, col("客户型号"))),
+      status: clean(cellAt(row, col("状态"))),
+      due: asDate(cellAt(row, col("外发交期"))),
+      outDate: asDate(cellAt(row, col("外发日期"))),
+      orderDate: asDate(cellAt(row, col("下单日期"))),
+      outQty: clean(cellText(cellAt(row, col("外发数量")))),
+      orderQty: clean(cellText(cellAt(row, col("订单数量")))),
+      factoryCode: clean(cellAt(row, col("供应商厂编"))),
+      supplierName: clean(cellAt(row, col("供应商"))),
+      salesman: clean(cellAt(row, col("业务经理"))),
+      po: clean(cellAt(row, col("客户PO"))),
     });
   }
   const records = [];
@@ -289,7 +339,7 @@ export function parseWorkbook(buffer, filename) {
       records.push(...orders.map((record) => decorate(record, filename, sheetName, detectedDate, dateSource)));
       continue;
     }
-    const benqiang = parseBenqiang(rows, sheetName);
+    const benqiang = parseBenqiang(rows, sheetName, filename);
     if (benqiang) {
       records.push(decorate(benqiang, filename, sheetName, detectedDate, dateSource));
       continue;

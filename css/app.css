@@ -81,6 +81,8 @@ button.ghost, button.danger, .row-actions button {
   border: 1px solid var(--line); background: white; border-radius: 8px; padding: 7px 10px;
 }
 button.danger { background: var(--late); color: white; border-color: var(--late); }
+button.star { border: 0; background: transparent; font-size: 18px; line-height: 1; color: #b45309; }
+button.star[aria-pressed="true"] { color: #9f1239; }
 .muted { color: var(--muted); font-size: 13px; }
 .grid-4, .grid-3 { display: grid; gap: 10px; }
 .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
