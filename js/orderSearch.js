@@ -1,16 +1,21 @@
 import { normKey } from "./lenient.js";
 
-export const SEARCH_FIELDS = ["全部", "客户型号", "生产编号", "生产型号", "厂编", "投产单号", "客户料号", "客户PO"];
+export const SEARCH_FIELDS = ["全部", "客户型号", "生产编号", "生产型号", "厂编", "投产单号", "客户料号", "客户PO", "产品编号"];
 
-const FIELD_KEY = {
-  客户型号: "custModel",
-  生产编号: "prodNo",
-  生产型号: "wipSc",
-  厂编: "factoryCode",
-  投产单号: "wipPo",
-  客户料号: "wipPn",
-  客户PO: "po",
+const FIELD_KEYS = {
+  客户型号: ["custModel"],
+  生产编号: ["prodNo"],
+  生产型号: ["wipSc"],
+  厂编: ["factoryCode"],
+  投产单号: ["wipPo"],
+  客户料号: ["wipPn"],
+  客户PO: ["po"],
+  产品编号: ["productNo"],
 };
+
+export function resultId(row) {
+  return row.trackId || `${row.supplier}|${row.prodNo}`;
+}
 
 export function parseBatch(text) {
   return String(text || "")
@@ -20,7 +25,7 @@ export function parseBatch(text) {
 }
 
 function matchesToken(row, needle, field) {
-  const keys = field && field !== "全部" ? [FIELD_KEY[field]].filter(Boolean) : Object.values(FIELD_KEY);
+  const keys = field && field !== "全部" ? (FIELD_KEYS[field] || []) : Object.values(FIELD_KEYS).flat();
   return keys.some((key) => normKey(row[key]).includes(needle));
 }
 
@@ -51,7 +56,7 @@ export function searchOrders(rows, options = {}) {
       continue;
     }
     for (const hit of hits) {
-      const id = `${hit.supplier}|${hit.prodNo}`;
+      const id = resultId(hit);
       if (seen.has(id)) continue;
       seen.add(id);
       matched.push(hit);
