@@ -204,12 +204,17 @@ function attachOrderFlags(models, orders) {
     if (sc && !bySc.has(sc)) bySc.set(sc, order);
   }
   for (const model of models.values()) {
-    const order = (model.pnU && byPn.get(model.pnU)) || (model.scU && bySc.get(model.scU)) || null;
+    const byProd = model.pnU && byPn.get(model.pnU);
+    const byFactory = model.scU && bySc.get(model.scU);
+    const order = byProd || byFactory || null;
     model.urgent = order ? clean(order.urgent) : "";
     model.due = order ? order.due || "" : "";
     model.orderStatus = order ? order.status || "" : "";
     model.prodNo = order ? order.prodNo || "" : "";
-    model.how = order ? (model.pnU && byPn.get(model.pnU) ? "生产编号" : "厂编") : "未找到订单";
+    if (!order) model.how = "未找到订单";
+    else if (model.pnFrom === "history" && byProd) model.how = "回填客户料号";
+    else if (byProd) model.how = "生产编号";
+    else model.how = "厂编";
   }
 }
 
@@ -411,12 +416,50 @@ function benqiangDay(files) {
   };
 }
 
-export function buildReport(records) {
+// A later export can omit 客户料号. Reuse the 生产型号 → 客户料号 seen on earlier days
+// so the comparison key stays source|型号|料号 instead of looking like a brand-new model.
+function alignBenqiangKeys(days) {
+  const known = new Map();
+  for (const day of days) {
+    const next = new Map();
+    for (const original of day.models.values()) {
+      const model = { ...original, steps: [...(original.steps || [])] };
+      const scKey = `${model.source}|${model.scU}`;
+      if (!model.pnU && known.has(scKey)) {
+        const prior = known.get(scKey);
+        model.pn = prior.pn;
+        model.pnU = prior.pnU;
+        model.pnFrom = "history";
+        model.key = `${model.source}|${model.scU}|${model.pnU}`;
+      } else if (!model.pnU) {
+        model.pnFrom = "missing";
+        model.key = `${model.source}|${model.scU}|`;
+      } else {
+        model.pnFrom = "sheet";
+      }
+      const existing = next.get(model.key);
+      if (!existing) next.set(model.key, model);
+      else {
+        existing.rows = (existing.rows || 0) + (model.rows || 0);
+        for (const step of model.steps) if (!existing.steps.includes(step)) existing.steps.push(step);
+      }
+      if (model.pnU) known.set(scKey, { pn: model.pn, pnU: model.pnU });
+    }
+    day.models = next;
+    day.index = indexBenqiang(next);
+  }
+}
+
+export function buildReport(records, options = {}) {
+  const from = options.from || "";
+  const to = options.to || "";
+  const inRange = (date) => (!from || date >= from) && (!to || date <= to);
   const bq = filesOn(records, "奔强", "wip");
   const jd = filesOn(records, "捷德", "wip");
   const bqOrders = latestOrderBook(records, "奔强");
   const jdOrders = latestOrderBook(records, "捷德");
   const bqDays = bq.dates.map((date) => ({ date, ...benqiangDay(bq.map.get(date)) }));
+  alignBenqiangKeys(bqDays);
   const jdDays = jd.dates.map((date) => ({ date, ...mergeTickets(jd.map.get(date)) }));
 
   let benqiang = null;
@@ -452,17 +495,20 @@ export function buildReport(records) {
     };
   }
 
-  const pair = bqDays.slice(-2);
+  const bqDates = bq.dates.filter(inRange);
+  const jdDates = jd.dates.filter(inRange);
+  const pair = bqDays.filter((day) => inRange(day.date)).slice(-2);
   const orderCounts = emptyTypeCounts(ORDER_TYPES);
   let orderUrgentStall = 0;
   const orderRows = [];
-  const asOf = [...bq.dates, ...jd.dates].sort().slice(-1)[0] || "";
-  const windowDates = [...new Set([...bq.dates, ...jd.dates])].sort().slice(-5);
+  const rangeDates = [...new Set([...bqDates, ...jdDates])].sort();
+  const windowDates = rangeDates.slice(-5);
+  const asOf = rangeDates[rangeDates.length - 1] || "";
 
   for (const order of (bqOrders && bqOrders.orders) || []) {
     const resolved = resolveBenqiangKey(order, pair.length ? pair : bqDays);
     const dayCells = {};
-    for (const date of windowDates) {
+    for (const date of rangeDates) {
       const day = bqDays.find((item) => item.date === date);
       if (!day) {
         dayCells[date] = { text: "—", present: false, snapshot: false };
@@ -476,7 +522,7 @@ export function buildReport(records) {
         steps: model ? model.steps : [],
       };
     }
-    const supplierDates = bq.dates.filter((date) => date <= (asOf || "9999"));
+    const supplierDates = bqDates.filter((date) => date <= (asOf || "9999"));
     const latestDate = supplierDates[supplierDates.length - 1] || "";
     const previousDate = supplierDates[supplierDates.length - 2] || "";
     const latest = latestDate ? dayCells[latestDate] : null;
@@ -489,7 +535,7 @@ export function buildReport(records) {
     );
     bump(orderCounts, type);
     if (type === "无进度" && isUrgent(order.urgent)) orderUrgentStall += 1;
-    orderRows.push(orderRow(order, "奔强", type, resolved.how, dayCells, asOf, latest && latest.text));
+    orderRows.push(orderRow(order, "奔强", type, resolved.how, dayCells, asOf, latest && latest.text, supplierDates));
   }
 
   const jdMatchCounts = { 数量: 0, 型号: 0, 无在制: 0, 未匹配: 0, total: 0 };
@@ -497,7 +543,7 @@ export function buildReport(records) {
   for (const order of (jdOrders && jdOrders.orders) || []) {
     const dayCells = {};
     const matches = {};
-    for (const date of windowDates) {
+    for (const date of rangeDates) {
       const day = jdDays.find((item) => item.date === date);
       if (!day) {
         dayCells[date] = { text: "—", present: false, snapshot: false };
@@ -518,7 +564,7 @@ export function buildReport(records) {
       jdMatchCounts[matched.how] = (jdMatchCounts[matched.how] || 0) + 1;
       jdMatchCounts.total += 1;
     }
-    const supplierDates = jd.dates.filter((date) => !asOf || date <= asOf);
+    const supplierDates = jdDates.filter((date) => !asOf || date <= asOf);
     const latestDate = supplierDates[supplierDates.length - 1] || "";
     const previousDate = supplierDates[supplierDates.length - 2] || "";
     const latest = latestDate ? dayCells[latestDate] : null;
@@ -529,7 +575,7 @@ export function buildReport(records) {
       !!(previous && previous.present),
       !!(latest && latest.present),
     );
-    orderRows.push(orderRow(order, "捷德", type, (matches[latestDate] && matches[latestDate].how) || "未匹配", dayCells, asOf, latest && (latest.detail || latest.text)));
+    orderRows.push(orderRow(order, "捷德", type, (matches[latestDate] && matches[latestDate].how) || "未匹配", dayCells, asOf, latest && (latest.detail || latest.text), supplierDates));
   }
 
   return {
@@ -537,20 +583,85 @@ export function buildReport(records) {
     windowDates,
     bqDates: bq.dates,
     jdDates: jd.dates,
+    backfill: backfillSummary(bqDays[bqDays.length - 1]),
     benqiang,
     jiede: buildJiedeTri(jdDays),
     jdMatch: latestJd ? { date: latestJd.date, counts: jdMatchCounts } : null,
     orderCounts,
     orderUrgentStall,
     orderRows,
+    dailyStats: dailyStats(orderRows),
     bqOrderTotal: (bqOrders && bqOrders.orders.length) || 0,
     jdOrderTotal: (jdOrders && jdOrders.orders.length) || 0,
   };
 }
 
-function orderRow(order, supplier, type, how, dayCells, asOf, wipText) {
+function backfillSummary(day) {
+  const byRule = {};
+  let models = 0;
+  let rows = 0;
+  if (!day) return { models, rows, byRule };
+  for (const model of day.models.values()) {
+    if (model.pnFrom !== "history") continue;
+    models += 1;
+    rows += model.rows || 0;
+    const rule = model.how || "未找到订单";
+    byRule[rule] = (byRule[rule] || 0) + (model.rows || 0);
+  }
+  return { models, rows, byRule };
+}
+
+function consecutiveStall(dayCells, dates) {
+  let count = 0;
+  for (let index = dates.length - 1; index >= 1; index -= 1) {
+    const current = dayCells[dates[index]];
+    const previous = dayCells[dates[index - 1]];
+    const type = classifyPresence(
+      previous && previous.steps,
+      current && current.steps,
+      !!(previous && previous.present),
+      !!(current && current.present),
+    );
+    if (type !== "无进度") break;
+    count += 1;
+  }
+  return count;
+}
+
+function dailyStats(orderRows) {
+  const grouped = new Map();
+  for (const row of orderRows) {
+    const dates = row.supplierDates || [];
+    dates.forEach((date, index) => {
+      const id = `${row.supplier}|${date}`;
+      if (!grouped.has(id)) {
+        grouped.set(id, {
+          supplier: row.supplier,
+          date,
+          counts: emptyTypeCounts(ORDER_TYPES),
+          urgent: emptyTypeCounts(ORDER_TYPES),
+        });
+      }
+      const bucket = grouped.get(id);
+      const current = row.dayCells[date];
+      const previous = index > 0 ? row.dayCells[dates[index - 1]] : null;
+      const type = classifyPresence(
+        previous && previous.steps,
+        current && current.steps,
+        !!(previous && previous.present),
+        !!(current && current.present),
+      );
+      bump(bucket.counts, type);
+      if (row.urgentFlag) bump(bucket.urgent, type);
+    });
+  }
+  return [...grouped.values()].sort((a, b) => a.date.localeCompare(b.date) || a.supplier.localeCompare(b.supplier, "zh"));
+}
+
+function orderRow(order, supplier, type, how, dayCells, asOf, wipText, supplierDates = []) {
   const dueDays = dateDiff(order.due, asOf);
   return {
+    supplierDates,
     supplier,
     urgent: clean(order.urgent),
     urgentFlag: isUrgent(order.urgent),
@@ -565,8 +676,18 @@ function orderRow(order, supplier, type, how, dayCells, asOf, wipText) {
     type,
     how,
     wipText: wipText || "",
+    stallDays: consecutiveStall(dayCells, supplierDates),
     dayCells,
   };
+}
+
+export function compareFocus(a, b) {
+  const rank = (a.type === "无进度" ? 0 : 1) - (b.type === "无进度" ? 0 : 1);
+  if (rank) return rank;
+  const left = a.dueDays == null ? 100000 : a.dueDays;
+  const right = b.dueDays == null ? 100000 : b.dueDays;
+  if (left !== right) return left - right;
+  return String(a.prodNo).localeCompare(String(b.prodNo));
 }
 
 export function dueBucket(row, withinDays) {

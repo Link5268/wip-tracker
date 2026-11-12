@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { classifyPresence, sameStepSet, triStatus, triRisk, jiedeMatch, dateDiff, buildReport } from "../js/logic.js";
+import { classifyPresence, sameStepSet, triStatus, triRisk, jiedeMatch, dateDiff, buildReport, compareFocus } from "../js/logic.js";
 
 assert.equal(sameStepSet(["钻孔", "电镀"], ["电镀", "钻孔"]), true);
 assert.equal(classifyPresence(["钻孔"], ["电镀", "钻孔"], true, true), "工序推进");
@@ -52,5 +52,29 @@ assert.equal(report.benqiang.counts["无进度"], 1);
 assert.equal(report.orderUrgentStall, 1);
 assert.equal(report.orderRows[0].how, "生产编号+厂编");
 assert.equal(report.orderRows[0].dayCells["2026-11-02"].text, "工程");
+
+const continued = buildReport([
+  {
+    id: "d1", supplier: "奔强", kind: "wip", subtype: "Y100", date: "2026-11-11", importedAt: "1", rowCount: 1,
+    models: [{ key: "Y100|SC1|PN1", source: "Y100", sc: "SC1", pn: "PN1", pnU: "PN1", scU: "SC1", cm: "", po: "", orderedAt: "", steps: ["内层线路"], rows: 1, pnFrom: "sheet" }],
+  },
+  {
+    id: "d2", supplier: "奔强", kind: "wip", subtype: "Y100", date: "2026-11-12", importedAt: "2", rowCount: 2,
+    models: [{ key: "Y100|SC1|", source: "Y100", sc: "SC1", pn: "", pnU: "", scU: "SC1", cm: "", po: "", orderedAt: "", steps: ["棕化"], rows: 2, pnFrom: "missing" }],
+  },
+  {
+    id: "ord", supplier: "奔强", kind: "order", subtype: "", date: "2026-11-12", importedAt: "3",
+    orders: [{ urgent: "", prodNo: "PN1", factoryCode: "OTHER", custModel: "", status: "已外发", due: "2026-11-20", outQty: "1" }],
+  },
+]);
+assert.equal(continued.benqiang.bySource.Y100["工序推进"], 1);
+assert.equal(continued.benqiang.bySource.Y100["今日新增"], 0);
+assert.equal(continued.benqiang.bySource.Y100["已出WIP"], 0);
+assert.equal(continued.backfill.rows, 2);
+assert.equal(continued.backfill.byRule["回填客户料号"], 2);
+assert.equal(continued.benqiang.rows[0].pn, "PN1");
+assert.equal(continued.dailyStats.some((item) => item.supplier === "奔强" && item.date === "2026-11-12" && item.counts["工序推进"] === 1), true);
+assert.equal(compareFocus({ type: "无进度", dueDays: 5, prodNo: "b" }, { type: "工序推进", dueDays: -1, prodNo: "a" }) < 0, true);
+assert.equal(compareFocus({ type: "无进度", dueDays: 1, prodNo: "a" }, { type: "无进度", dueDays: 4, prodNo: "b" }) < 0, true);
 
 console.log("synthetic ok");
