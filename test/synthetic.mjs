@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { classifyPresence, sameStepSet, triStatus, triRisk, jiedeMatch, dateDiff, buildReport, compareFocus } from "../js/logic.js";
 import { dailyStatus } from "../js/daily.js";
 import { matchOrder, indexEntities, normKey, usableKey } from "../js/lenient.js";
+import { compareBySequence, defaultCatalog, itemsFromSheetRows, normalizeOp } from "../js/processOrder.js";
+import { parseBatch, searchOrders } from "../js/orderSearch.js";
+import { buildBackup, readBackup } from "../js/backup.js";
 
 assert.equal(sameStepSet(["钻孔", "电镀"], ["电镀", "钻孔"]), true);
 assert.equal(classifyPresence(["钻孔"], ["电镀", "钻孔"], true, true), "工序推进");
@@ -95,5 +98,61 @@ assert.equal(unique.many, false);
 const many = matchOrder({ prodNo: "ZZZZZZ", factoryCode: "", custModel: "MODEL-A", outQty: "" }, indexed);
 assert.equal(many.many, true);
 assert.equal(many.basis.includes("一对多"), true);
+
+const bq = defaultCatalog("奔强");
+const jd = defaultCatalog("捷德");
+assert.equal(bq.total, 105);
+assert.equal(jd.total, 60);
+assert.equal(normalizeOp("成型|P"), "成型");
+assert.equal(normalizeOp("终检二S"), "终检二");
+assert.equal(normalizeOp(" 开料Ｐ "), "开料");
+assert.equal(bq.lookup("三钻"), 34);
+assert.equal(bq.lookup("开料"), 2);
+assert.equal(bq.lookup("工程"), 0);
+assert.equal(bq.lookup("仓库"), 999);
+assert.equal(bq.lookup("外发"), null);
+assert.equal(bq.lookup("PCBA"), null);
+assert.equal(compareBySequence(["棕化"], ["层压"], true, true, bq), "工序推进");
+assert.equal(compareBySequence(["层压"], ["棕化"], true, true, bq), "工序回退");
+assert.equal(compareBySequence(["内层AOI", "内层线路"], ["内层线路", "内层AOI"], true, true, bq), "无进度");
+assert.equal(compareBySequence(["工程"], ["开料"], true, true, bq), "工序推进");
+assert.equal(compareBySequence(["终检"], ["仓库"], true, true, bq), "工序推进");
+assert.equal(compareBySequence(["外发"], ["测试"], true, true, bq), "工序变化(顺序未知)");
+assert.equal(compareBySequence(["开料"], null, true, false, bq), "已出WIP");
+assert.equal(jd.lookup("*电测"), 57);
+assert.deepEqual(itemsFromSheetRows([["工序名称", "顺序号"], ["钻孔", 8], ["钻孔", 3], ["文字", 9]]), [
+  { name: "钻孔", seq: 3 },
+  { name: "文字", seq: 9 },
+]);
+
+assert.deepEqual(parseBatch("A1, A2，A3\nA4\tA5  A6"), ["A1", "A2", "A3", "A4", "A5", "A6"]);
+const sample = [
+  { supplier: "奔强", prodNo: "PN10001", factoryCode: "SCMODEL1", custModel: "Board-A", po: "PO-9", wipSc: "SCMODEL1", wipPn: "PN10001", wipPo: "", urgentFlag: true, starred: false },
+  { supplier: "捷德", prodNo: "PN20002", factoryCode: "SCMODEL2", custModel: "Other", po: "PO-1", wipSc: "", wipPn: "", wipPo: "JK10001", urgentFlag: false, starred: true },
+];
+assert.equal(searchOrders(sample, { query: "board-a", field: "客户型号" }).rows.length, 1);
+assert.equal(searchOrders(sample, { query: "pn10001", field: "生产编号" }).rows[0].prodNo, "PN10001");
+assert.equal(searchOrders(sample, { query: "scmodel1", field: "厂编" }).rows[0].prodNo, "PN10001");
+assert.equal(searchOrders(sample, { query: "po-9", field: "客户PO" }).rows.length, 1);
+assert.equal(searchOrders(sample, { query: "pn10001", field: "客户型号" }).rows.length, 0);
+const batch = searchOrders(sample, { query: "PN10001，没有这单\nJK10001", field: "全部" });
+assert.deepEqual(batch.rows.map((row) => row.prodNo), ["PN10001", "PN20002"]);
+assert.deepEqual(batch.missed, ["没有这单"]);
+assert.equal(searchOrders(sample, { query: "", kind: "加急" }).rows.length, 1);
+assert.equal(searchOrders(sample, { query: "", kind: "我关注的" }).rows[0].prodNo, "PN20002");
+assert.equal(searchOrders(sample, { query: "", kind: "全部订单" }).idle, true);
+
+const packed = buildBackup({
+  files: [{ id: "f", supplier: "奔强", kind: "order" }],
+  stars: [{ id: "奔强|PN10001", supplier: "奔强", prodNo: "PN10001" }],
+  notes: [{ id: "奔强|PN10001", supplier: "奔强", prodNo: "PN10001", note: "明天问交期" }],
+  processOrders: [{ supplier: "奔强", items: [{ name: "开料", seq: 2 }] }],
+  exportedAt: "2026-11-12T00:00:00.000Z",
+});
+const restored = readBackup(packed);
+assert.equal(restored.notes[0].note, "明天问交期");
+assert.equal(restored.stars[0].id, "奔强|PN10001");
+assert.equal(restored.processOrders[0].items[0].seq, 2);
+assert.equal(restored.files.length, 1);
 
 console.log("synthetic ok");

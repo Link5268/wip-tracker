@@ -2,8 +2,11 @@ import { buildReport, compareFocus, dueBucket, MODEL_TYPES, ORDER_TYPES } from "
 import { parseWorkbook } from "./parse.js";
 import { buildFocusWorkbook, buildStatsWorkbook, workbookBytes } from "./export.js";
 import { buildDailyWorkbook, buildDailyZip, dailyStatus } from "./daily.js";
-import { buildOneDaily } from "./oneReport.js";
-import { listFiles, listStars, putStar, deleteStar, replaceStars, putFile, deleteFile, replaceAll, clearAll, sha256, starId } from "./db.js";
+import { buildOneDaily, buildSearchWorkbook } from "./oneReport.js";
+import { listFiles, listStars, listNotes, putNote, replaceNotes, listProcessOrders, saveProcessOrder, deleteProcessOrder, replaceProcessOrders, putStar, deleteStar, replaceStars, putFile, deleteFile, replaceAll, clearAll, sha256, starId } from "./db.js";
+import { catalogsFrom, catalogFromItems, defaultCatalog, itemsFromSheetRows, BENQIANG_PENDING } from "./processOrder.js";
+import { SEARCH_FIELDS, searchOrders } from "./orderSearch.js";
+import { buildBackup, readBackup } from "./backup.js";
 
 const app = document.querySelector("#app");
 const saveState = document.querySelector("#save-state");
@@ -19,8 +22,15 @@ const state = {
   dateFrom: "",
   dateTo: "",
   stars: new Set(),
+  notes: new Map(),
+  orderLists: { 奔强: null, 捷德: null },
+  seqSupplier: "奔强",
   focusSupplier: "全部",
+  focusKind: "全部订单",
+  focusField: "全部",
   focusQuery: "",
+  focusOpen: "",
+  seqMessage: "",
   log: [],
   busy: false,
 };
@@ -28,6 +38,8 @@ const state = {
 const STATUS_CLASS = {
   工序推进: "st-go",
   无进度: "st-stop",
+  工序回退: "st-back",
+  "工序变化(顺序未知)": "st-unk",
   已出WIP: "st-out",
   今日新增: "st-new",
   未在WIP: "st-miss",
@@ -57,13 +69,17 @@ async function init() {
   });
   state.records = await listFiles();
   state.stars = new Set((await listStars()).map((star) => star.id));
+  state.notes = new Map((await listNotes()).map((note) => [note.id, note.note || ""]));
+  for (const row of await listProcessOrders()) {
+    if (row && (row.supplier === "奔强" || row.supplier === "捷德")) state.orderLists[row.supplier] = row.items || [];
+  }
   render();
 }
 
 function render() {
   const focusId = document.activeElement && document.activeElement.id;
   const caret = document.activeElement && document.activeElement.selectionStart;
-  const report = buildReport(state.records, { from: state.dateFrom, to: state.dateTo });
+  const report = buildReport(state.records, { from: state.dateFrom, to: state.dateTo, catalogs: state.orderLists });
   saveState.textContent = state.records.length
     ? `本机已保存 ${state.records.length} 份表，最近对照日 ${report.asOf || "未识别"}`
     : "尚未导入";
@@ -74,6 +90,7 @@ function render() {
     urgent: () => viewUrgent(report),
     focus: () => viewFocus(report),
     due: () => viewDue(report),
+    sequence: () => viewSequence(),
     backup: () => viewBackup(),
   }[state.tab]();
   bind();
@@ -138,14 +155,15 @@ function bind() {
   if (dateTo) dateTo.addEventListener("change", () => { state.dateTo = dateTo.value; render(); });
   const exportXlsx = document.querySelector("#export-xlsx");
   if (exportXlsx) exportXlsx.addEventListener("click", () => {
-    const current = buildReport(state.records, { from: state.dateFrom, to: state.dateTo });
+    const current = buildReport(state.records, { from: state.dateFrom, to: state.dateTo, catalogs: state.orderLists });
     downloadBook(buildStatsWorkbook(current, { supplier: state.supplier, withinDays: state.dueWithin }), `货期统计-${current.asOf || "全部"}.xlsx`);
   });
   const exportFocus = document.querySelector("#export-focus");
-  if (exportFocus) exportFocus.addEventListener("click", () => {
-    const current = buildReport(state.records, { from: state.dateFrom, to: state.dateTo });
-    const rows = focusList(current);
-    downloadBook(buildFocusWorkbook(rows, current.windowDates), `重点急件-${current.asOf || "全部"}.xlsx`);
+  if (exportFocus) exportFocus.addEventListener("click", async () => {
+    const current = buildReport(state.records, { from: state.dateFrom, to: state.dateTo, catalogs: state.orderLists });
+    const rows = focusResult(current).rows.map((row) => ({ ...row, note: state.notes.get(starId(row.supplier, row.prodNo)) || "" }));
+    const result = await buildSearchWorkbook(rows);
+    downloadBytes(result.buffer, result.filename, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   });
   const focusSupplier = document.querySelector("#focus-supplier");
   if (focusSupplier) focusSupplier.addEventListener("change", () => { state.focusSupplier = focusSupplier.value; render(); });
@@ -182,6 +200,75 @@ function bind() {
     importBackup.value = "";
     importBackupFile(file);
   });
+  const focusKind = document.querySelector("#focus-kind");
+  if (focusKind) focusKind.addEventListener("change", () => { state.focusKind = focusKind.value; state.focusOpen = ""; render(); });
+  const focusField = document.querySelector("#focus-field");
+  if (focusField) focusField.addEventListener("change", () => { state.focusField = focusField.value; state.focusOpen = ""; render(); });
+  document.querySelectorAll("[data-open]").forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("button, textarea, input, a, select")) return;
+      state.focusOpen = state.focusOpen === row.dataset.open ? "" : row.dataset.open;
+      render();
+    });
+  });
+  document.querySelectorAll("[data-note]").forEach((box) => {
+    box.addEventListener("input", async () => {
+      const id = box.dataset.note;
+      const cut = id.indexOf("|");
+      const note = box.value;
+      state.notes.set(id, note);
+      await putNote({ id, supplier: id.slice(0, cut), prodNo: id.slice(cut + 1), note });
+    });
+  });
+  const seqSupplier = document.querySelector("#seq-supplier");
+  if (seqSupplier) seqSupplier.addEventListener("change", () => { state.seqSupplier = seqSupplier.value; render(); });
+  document.querySelectorAll("[data-seq]").forEach((input) => {
+    input.addEventListener("change", async () => {
+      const supplier = state.seqSupplier;
+      const items = currentOrderItems(supplier).map((item) => item.name === input.dataset.seq ? { ...item, seq: Number(input.value) } : item);
+      await commitOrderItems(supplier, items);
+    });
+  });
+  document.querySelectorAll("[data-seq-del]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const supplier = state.seqSupplier;
+      const items = currentOrderItems(supplier).filter((item) => item.name !== button.dataset.seqDel);
+      await commitOrderItems(supplier, items);
+    });
+  });
+  const seqAdd = document.querySelector("#seq-add");
+  if (seqAdd) seqAdd.addEventListener("click", async () => {
+    const name = document.querySelector("#seq-name").value.trim();
+    const seq = Number(document.querySelector("#seq-num").value);
+    if (!name || !Number.isFinite(seq)) return;
+    const supplier = state.seqSupplier;
+    const items = currentOrderItems(supplier).filter((item) => item.name !== name);
+    items.push({ name, seq });
+    await commitOrderItems(supplier, items);
+  });
+  const seqReset = document.querySelector("#seq-reset");
+  if (seqReset) seqReset.addEventListener("click", async () => {
+    const supplier = state.seqSupplier;
+    state.orderLists[supplier] = null;
+    await deleteProcessOrder(supplier);
+    render();
+  });
+  const seqImport = document.querySelector("#seq-import");
+  if (seqImport) seqImport.addEventListener("change", async () => {
+    const file = seqImport.files[0];
+    seqImport.value = "";
+    if (!file) return;
+    const book = XLSX.read(await file.arrayBuffer(), { type: "array" });
+    const rows = XLSX.utils.sheet_to_json(book.Sheets[book.SheetNames[0]], { header: 1, defval: "" });
+    const items = itemsFromSheetRows(rows);
+    if (!items.length) {
+      state.seqMessage = "没有读到工序。表头需要「工序名称」和「顺序号」，或直接用前两列。";
+      render();
+      return;
+    }
+    state.seqMessage = "";
+    await commitOrderItems(state.seqSupplier, items);
+  });
   const clearBtn = document.querySelector("#clear");
   if (clearBtn) clearBtn.addEventListener("click", async () => {
     const ok = await ask("清空本机数据", "这会删除浏览器里保存的 WIP 和订单，不影响已经下载的备份文件。");
@@ -189,6 +276,8 @@ function bind() {
     await clearAll();
     state.records = [];
     state.stars = new Set();
+    state.notes = new Map();
+    state.orderLists = { 奔强: null, 捷德: null };
     state.log = [];
     render();
   });
@@ -267,7 +356,7 @@ function viewDays(report) {
   const rows = filteredOrders(report).map((row) => {
     const days = report.windowDates.map((date) => {
       const cell = row.dayCells[date] || { text: "—" };
-      return `<td class="steps" title="${esc(cell.detail || "")}">${esc(cell.text || "—")}</td>`;
+      return `<td class="steps" title="${esc(cell.detail || "")}">${esc(cell.text || "—")}${cell.seqLabel ? `<br><span class="muted">${esc(cell.seqLabel)}</span>` : ""}</td>`;
     }).join("");
     return `<tr class="${STATUS_CLASS[row.type] || ""}" data-urgent="${row.urgentFlag ? "1" : "0"}">
       <td>${starButton(row)}</td>
@@ -290,7 +379,7 @@ function viewDays(report) {
     ${statsTable(report)}
     <section class="card">
       <h2>最近 ${report.windowDates.length || 0} 个有 WIP 的日期</h2>
-      <p class="help">每个订单一行。工序按当天匹配到的型号去重后用「 + 」连接。较上日只和该供应商的上一份 WIP 比：工序集合相同是无进度（顺序不同也算），集合变了是工序推进。☆ 可以把非加急单标成「我关注的」。</p>
+      <p class="help">每个订单一行。工序按当天匹配到的型号去重后用「 + 」连接。较上日比的是顺序号：更大是工序推进，相同是无进度，更小是工序回退，有一边不在顺序表里是工序变化(顺序未知)。☆ 标成「我关注的」。</p>
       <div class="legend">${ORDER_TYPES.map((type) => tag(type)).join("")}</div>
     </section>
     <div class="table-wrap">${table(head, rows || `<tr><td colspan="${head.length}">没有符合筛选的订单。</td></tr>`)}</div>
@@ -307,6 +396,7 @@ function viewModels(report) {
       <td>${esc(row.cm)}</td>
       <td class="steps">${esc(row.prevText)}</td>
       <td class="steps">${esc(row.currText)}</td>
+      <td>${esc(row.seqLabel || "")}</td>
       <td>${row.prevRows || ""}</td>
       <td>${row.currRows || ""}</td>
       <td>${esc(row.prodNo)}</td>
@@ -328,8 +418,8 @@ function viewModels(report) {
     ${filters("搜索生产型号、客户料号、投产单号")}
     <section class="card">
       <h2>奔强型号明细</h2>
-      <p class="help">按「来源 + 生产型号 + 客户料号」汇总。同一型号多行工序去重后用「 + 」连接。无进度用底色标出。</p>
-      <div class="table-wrap">${table(["变化", "加急", "来源", "生产型号", "客户料号", "客户型号", "上一日工序", "当日工序", "上行数", "当日行数", "订单生产编号", "外发交期"], modelRows || `<tr><td colspan="12">${report.benqiang ? "没有符合筛选的型号。" : "至少需要两天奔强 WIP。"}</td></tr>`)}</div>
+      <p class="help">按「来源 + 生产型号 + 客户料号」汇总，y099 和 Y100 各自跟自己的上一份比。同一型号多行工序去重后用「 + 」连接，顺序号取当天最远的一道。无进度、回退用底色标出。</p>
+      <div class="table-wrap">${table(["变化", "加急", "来源", "生产型号", "客户料号", "客户型号", "上一日工序", "当日工序", "今日顺序", "上行数", "当日行数", "订单生产编号", "外发交期"], modelRows || `<tr><td colspan="13">${report.benqiang ? "没有符合筛选的型号。" : "至少需要两天奔强 WIP。"}</td></tr>`)}</div>
     </section>
     <section class="card">
       <h2>捷德投产单（最近三天）</h2>
@@ -356,7 +446,7 @@ function viewUrgent(report) {
     ${filters("搜索加急单")}
     <section class="card">
       <h2>加急且无进度 <b data-testid="urgent-list-count">${rows.length}</b></h2>
-      <p class="help">加急列是「加急」或以「急」开头，并且较上一份 WIP 工序集合没有变化。奔强订单里这一类是 <span data-testid="bq-order-urgent-stall">${report.orderUrgentStall}</span> 单。</p>
+      <p class="help">加急列是「加急」或以「急」开头，并且较上一份 WIP 最远顺序号没有变化。奔强订单里这一类是 <span data-testid="bq-order-urgent-stall">${report.orderUrgentStall}</span> 单。</p>
       <div class="table-wrap">${table(["关注", "加急", "供应商", "生产编号", "厂编", "客户型号", "状态", "外发交期", "当前工序"], body || `<tr><td colspan="9">当前没有加急且无进度的订单。</td></tr>`)}</div>
     </section>
   </div>`;
@@ -391,62 +481,189 @@ function viewDue(report) {
 }
 
 function viewFocus(report) {
-  const rows = focusList(report);
+  const found = focusResult(report);
+  const rows = found.rows;
+  const dates = focusDates(report, rows);
+  const single = rows.length === 1 ? rows[0] : null;
+  const opened = single || rows.find((row) => starId(row.supplier, row.prodNo) === state.focusOpen) || null;
   const body = rows.map((row) => {
-    const days = report.windowDates.map((date) => `<td class="steps">${esc((row.dayCells[date] && row.dayCells[date].text) || "—")}</td>`).join("");
-    return `<tr class="${STATUS_CLASS[row.type] || ""}" data-type="${esc(row.type)}" data-due="${row.dueDays == null ? "" : row.dueDays}" data-starred="${row.starred ? "1" : "0"}" data-urgent="${row.urgentFlag ? "1" : "0"}">
+    const id = starId(row.supplier, row.prodNo);
+    const open = opened && starId(opened.supplier, opened.prodNo) === id;
+    const days = dates.map((date) => {
+      const cell = row.dayCells[date] || {};
+      return `<td class="steps">${esc(cell.text || "—")}<br><span class="muted">${esc(cell.seqLabel || "—")}</span></td>`;
+    }).join("");
+    const detail = open ? `<tr class="detail"><td colspan="${6 + dates.length}">${dayDetail(row, dates)}</td></tr>` : "";
+    return `<tr class="${STATUS_CLASS[row.type] || ""}" data-open="${esc(id)}" data-testid="order-row">
       <td>${starButton(row)}</td>
-      <td>${row.urgentFlag ? `<b class="urg">${esc(row.urgent)}</b>` : (row.starred ? "我关注的" : "")}</td>
       <td>${tag(row.type)}</td>
       <td>${esc(row.supplier)}</td>
       <td>${esc(row.prodNo)}</td>
-      <td>${esc(row.factoryCode)}</td>
       <td>${esc(row.custModel)}</td>
-      <td>${row.stallDays}</td>
-      <td class="${row.dueDays != null && row.dueDays < 0 ? "late" : ""}">${esc(row.due)} ${dueText(row.dueDays)}</td>
+      <td>${esc(row.how)}</td>
       ${days}
-    </tr>`;
+    </tr>${detail}`;
   }).join("");
-  const head = ["关注", "来源", "较上日", "供应商", "生产编号", "厂编", "客户型号", "连续无进度", "外发交期", ...report.windowDates];
+  const head = ["关注", "进度", "客户", "生产编号", "客户型号", "匹配依据", ...dates];
+  const missed = found.missed.length ? `<p class="missed" data-testid="search-missed">没有对上：${found.missed.map((item) => esc(item)).join("、")}</p>` : "";
   return `<div class="stack">
     <section class="card filters">
-      <label class="field">供应商
+      <label class="field">客户
         <select id="focus-supplier">
           ${["全部", "奔强", "捷德"].map((item) => `<option ${item === state.focusSupplier ? "selected" : ""}>${item}</option>`).join("")}
         </select>
       </label>
-      <label class="field">搜索
-        <input id="focus-q" type="search" placeholder="生产编号 / 厂编 / 客户型号" value="${esc(state.focusQuery)}">
+      <label class="field">范围
+        <select id="focus-kind">
+          ${["全部订单", "加急", "我关注的"].map((item) => `<option ${item === state.focusKind ? "selected" : ""}>${item}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">搜索字段
+        <select id="focus-field">
+          ${SEARCH_FIELDS.map((item) => `<option ${item === state.focusField ? "selected" : ""}>${item}</option>`).join("")}
+        </select>
       </label>
       <label class="field">从<input id="date-from" type="date" value="${esc(state.dateFrom)}"></label>
       <label class="field">到<input id="date-to" type="date" value="${esc(state.dateTo)}"></label>
-      <button type="button" id="export-focus">导出急件 Excel</button>
-      <p class="muted">只列出伯仁订单里标了加急的，以及你打了星的「我关注的」。星只存在这台电脑，并会写进 JSON 备份。</p>
+      <button type="button" id="export-focus">导出查询结果</button>
     </section>
     <section class="card">
-      <h2>重点急件 <b data-testid="focus-count">${rows.length}</b></h2>
-      <p class="help">默认把无进度放在前面，同一组里交期越近越靠前。连续无进度是从最近一天往回数，有几天和前一天工序集合完全一样。</p>
-      <div class="table-wrap">${table(head, body || `<tr><td colspan="${head.length}">没有急件或关注的订单。</td></tr>`)}</div>
+      <label class="field">查订单
+        <textarea id="focus-q" rows="3" placeholder="输入生产编号、客户PO或客户型号。多个编号用换行、逗号或空格分开">${esc(state.focusQuery)}</textarea>
+      </label>
+      <p class="help">会在客户型号、生产编号、生产型号、厂编、投产单号、客户料号、客户PO 里做包含匹配，不分大小写，全角半角和空格会先折掉。下拉框可以只查其中一个字段。只找到一单时，上面直接出订单卡片；找到多单时，点一行展开。</p>
+      ${missed}
+    </section>
+    ${opened ? orderCard(opened, dates) : ""}
+    <section class="card">
+      <h2>查询结果 <b data-testid="focus-count">${rows.length}</b></h2>
+      <div class="table-wrap">${table(head, body || `<tr><td colspan="${head.length}">${found.idle ? "输入编号后就会列出订单。" : "没有符合条件的订单。"}</td></tr>`)}</div>
     </section>
   </div>`;
 }
 
-function focusList(report) {
-  const query = state.focusQuery.trim().toLowerCase();
-  return report.orderRows.filter((row) => {
-    const starred = state.stars.has(starId(row.supplier, row.prodNo));
-    if (!row.urgentFlag && !starred) return false;
-    if (state.focusSupplier !== "全部" && row.supplier !== state.focusSupplier) return false;
-    if (!query) return true;
-    return [row.prodNo, row.factoryCode, row.custModel].some((part) => String(part || "").toLowerCase().includes(query));
-  }).map((row) => ({ ...row, starred: state.stars.has(starId(row.supplier, row.prodNo)) })).sort(compareFocus);
+function focusResult(report) {
+  const rows = report.orderRows.map((row) => ({ ...row, starred: state.stars.has(starId(row.supplier, row.prodNo)) }));
+  const found = searchOrders(rows, {
+    query: state.focusQuery,
+    field: state.focusField,
+    supplier: state.focusSupplier,
+    kind: state.focusKind,
+  });
+  found.rows.sort(compareFocus);
+  return found;
+}
+
+function focusDates(report, rows) {
+  const set = new Set();
+  for (const row of rows) for (const date of row.supplierDates || []) if (row.dayCells[date] && row.dayCells[date].snapshot) set.add(date);
+  const dates = [...set].sort();
+  if (dates.length) return dates.slice(-5);
+  return (report.windowDates || []).slice(-5);
+}
+
+function dayDetail(row, dates) {
+  const items = dates.map((date) => {
+    const cell = row.dayCells[date] || {};
+    return `<li><b>${esc(date)}</b><span>${esc(cell.text || "—")}</span><span>${esc(cell.seqLabel || "—")}</span></li>`;
+  }).join("");
+  return `<ol class="timeline">${items || "<li>这几天没有 WIP。</li>"}</ol>`;
+}
+
+function orderCard(row, dates) {
+  const id = starId(row.supplier, row.prodNo);
+  const dueClass = row.dueDays != null && row.dueDays <= 3 ? "late" : "";
+  const note = state.notes.get(id) || "";
+  const cells = [
+    ["生产编号", row.prodNo],
+    ["客户", row.customer || row.supplier],
+    ["客户型号", row.custModel],
+    ["客户PO", row.po],
+    ["订单数量", row.orderQty || row.outQty],
+    ["下单日", row.orderDate],
+    ["交期", row.due],
+    ["是否加急", row.urgentFlag ? (row.urgent || "加急") : "否"],
+    ["当前工序", row.seqLabel],
+    ["在制数量", row.wipQty],
+    ["匹配依据", row.how],
+  ];
+  return `<article class="card order-card" data-testid="order-card">
+    <div class="card-head">
+      <h2>订单卡片</h2>
+      ${starButton(row)}
+    </div>
+    <dl>
+      ${cells.map(([label, value]) => `<div><dt>${label}</dt><dd data-field="${esc(label)}">${dash(value)}</dd></div>`).join("")}
+      <div><dt>距交期天数</dt><dd data-field="距交期天数" class="${dueClass}">${row.dueDays == null ? "-" : row.dueDays}</dd></div>
+      <div><dt>进度</dt><dd data-field="进度">${tag(row.type)}</dd></div>
+    </dl>
+    <h3>最近工序</h3>
+    ${dayDetail(row, dates)}
+    <label class="field">跟进备注
+      <textarea class="note-box" data-note="${esc(id)}" data-testid="order-note">${esc(note)}</textarea>
+    </label>
+  </article>`;
+}
+
+function dash(value) {
+  const text = value == null ? "" : String(value).trim();
+  return text ? esc(text) : "-";
+}
+
+function currentOrderItems(supplier) {
+  const custom = state.orderLists[supplier];
+  if (custom && custom.length) return custom.map((item) => ({ name: item.name, seq: item.seq }));
+  return defaultCatalog(supplier).items.map((item) => ({ name: item.name, seq: item.seq }));
+}
+
+async function commitOrderItems(supplier, items) {
+  const cleaned = catalogFromItems(items).items;
+  state.orderLists[supplier] = cleaned;
+  await saveProcessOrder(supplier, cleaned);
+  render();
+}
+
+function viewSequence() {
+  const supplier = state.seqSupplier;
+  const items = currentOrderItems(supplier);
+  const custom = Boolean(state.orderLists[supplier] && state.orderLists[supplier].length);
+  const catalog = catalogsFrom(state.orderLists)[supplier];
+  const body = items.map((item) => `<tr>
+    <td>${esc(item.name)}</td>
+    <td><input data-seq="${esc(item.name)}" type="number" value="${item.seq}"></td>
+    <td><button type="button" data-seq-del="${esc(item.name)}">删除</button></td>
+  </tr>`).join("");
+  const pending = BENQIANG_PENDING.map((item) => `${item.name}：${item.note}`).join("；");
+  return `<div class="stack">
+    <section class="card stack">
+      <h2>工序顺序</h2>
+      <p class="help">每个供应商一份。比较进度时，当天取能对上的最远顺序号。数字更大是工序推进，相同是无进度，更小是工序回退。对不上的名字算「工序变化(顺序未知)」。同名多条时用最小的顺序号。改动只存在这台电脑，并会写进 JSON 备份。当前是${custom ? "你保存的顺序" : "默认顺序"}，共 ${items.length} 条，显示成「第N/${catalog.total}道」。</p>
+      ${supplier === "奔强" ? `<p class="help">${esc(pending)}。可以在表里改数字，或自己导入。</p>` : `<p class="help">捷德默认是三日进度表「工序顺序」里的 60 道。</p>`}
+      ${state.seqMessage ? `<p class="missed">${esc(state.seqMessage)}</p>` : ""}
+      <div class="filters">
+        <label class="field">供应商
+          <select id="seq-supplier">
+            ${["奔强", "捷德"].map((item) => `<option ${item === supplier ? "selected" : ""}>${item}</option>`).join("")}
+          </select>
+        </label>
+        <button type="button" id="seq-reset">恢复默认</button>
+        <label class="file-btn">导入两列 Excel<input id="seq-import" type="file" accept=".xls,.xlsx,.xlsm"></label>
+      </div>
+      <div class="filters">
+        <label class="field">工序名称<input id="seq-name" type="text"></label>
+        <label class="field">顺序号<input id="seq-num" type="number"></label>
+        <button type="button" id="seq-add">添加工序</button>
+      </div>
+      <div class="table-wrap">${table(["工序名称", "顺序号", ""], body)}</div>
+    </section>
+  </div>`;
 }
 
 function viewBackup() {
   return `<div class="stack">
     <section class="card stack">
       <h2>换电脑时带走数据</h2>
-      <p class="help">备份是一个 JSON 文件，里面是已经解析好的 WIP 和订单。把它拷到另一台电脑，在这里导入即可。不要把这个文件提交到公开仓库。</p>
+      <p class="help">备份是一个 JSON 文件，里面是已经解析好的 WIP、订单、「我关注的」、跟进备注和工序顺序。把它拷到另一台电脑，在这里导入即可。不要把这个文件提交到公开仓库。</p>
       <div class="row-actions">
         <button type="button" id="export">下载备份</button>
         <label class="file-btn">导入备份<input id="import-backup" type="file" accept="application/json,.json"></label>
@@ -482,12 +699,12 @@ function summaryCards(report) {
   const match = report.jdMatch ? report.jdMatch.counts : null;
   return `<section class="card stack" id="summary">
     <h2>奔强型号两日对比</h2>
-    <p class="help">${bq ? `上一日 <span data-testid="bq-prev-date">${esc(bq.prev)}</span> → 当日 <span data-testid="bq-curr-date">${esc(bq.curr)}</span>。行数 y099 <span data-testid="bq-rows-y099">${bq.prevRows.y099 || 0}→${bq.currRows.y099 || 0}</span>，Y100 <span data-testid="bq-rows-y100">${bq.prevRows.Y100 || 0}→${bq.currRows.Y100 || 0}</span>。` : "导入至少两天奔强 WIP 后，这里会出 y099 / Y100 的推进和无进度。"}</p>
+    <p class="help">${bq ? `y099 <span data-testid="bq-prev-date">${esc((src("y099") && src("y099").prev) || "")}</span>→<span data-testid="bq-curr-date">${esc((src("y099") && src("y099").curr) || "")}</span>，Y100 ${esc((src("Y100") && src("Y100").prev) || "")}→${esc((src("Y100") && src("Y100").curr) || "")}。行数 y099 <span data-testid="bq-rows-y099">${bq.prevRows.y099 || 0}→${bq.currRows.y099 || 0}</span>，Y100 <span data-testid="bq-rows-y100">${bq.prevRows.Y100 || 0}→${bq.currRows.Y100 || 0}</span>。顺序号更大是推进，相同是无进度，更小是回退。` : "导入至少两天奔强 WIP 后，这里会出 y099 / Y100 的推进、无进度和回退。"}</p>
     <div class="table-wrap"><table>
       <thead><tr><th>变化</th><th>y099</th><th>Y100</th><th>合计</th></tr></thead>
       <tbody>
-        ${["工序推进", "无进度", "已出WIP", "今日新增"].map((type) => {
-          const id = { 工序推进: "advance", 无进度: "stall", 已出WIP: "out", 今日新增: "new" }[type];
+        ${["工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增"].map((type) => {
+          const id = { 工序推进: "advance", 无进度: "stall", 工序回退: "back", "工序变化(顺序未知)": "unknown", 已出WIP: "out", 今日新增: "new" }[type];
           return `<tr class="${STATUS_CLASS[type] || ""}"><td>${tag(type)}</td>
             <td data-testid="bq-y099-${id}">${cell(src("y099"), "y099", type)}</td>
             <td data-testid="bq-y100-${id}">${cell(src("Y100"), "Y100", type)}</td>
@@ -499,9 +716,11 @@ function summaryCards(report) {
           <td data-testid="bq-all-models">${bq ? bq.counts.total : "—"}</td></tr>
       </tbody>
     </table></div>
-    <p class="help">缺少客户料号时，按以前各天的「生产型号 → 客户料号」回填，比较用的键不变。本日回填并参与匹配的有 <b data-testid="bq-backfill-rows">${report.backfill.rows}</b> 行、<b data-testid="bq-backfill-models">${report.backfill.models}</b> 个型号<span data-testid="bq-backfill-rules">${backfillRules(report.backfill)}</span>。型号上挂到加急、并且无进度的有 <b data-testid="bq-model-urgent-stall">${bq ? bq.urgentStall : "—"}</b> 个。加急且无进度的奔强订单有 <b data-testid="bq-order-urgent-stall">${report.orderUrgentStall}</b> 单。订单逐单统计（生产编号+厂编，其次生产编号，再次厂编）：
+    <p class="help">工程暂定第 0 道，仓库暂定第 999 道（视为已完工），外发和 PCBA 不编顺序。这四项是默认值，等 Jay 确认，可在「工序顺序」里改。缺少客户料号时，按以前各天的「生产型号 → 客户料号」回填，比较用的键不变。本日回填并参与匹配的有 <b data-testid="bq-backfill-rows">${report.backfill.rows}</b> 行、<b data-testid="bq-backfill-models">${report.backfill.models}</b> 个型号<span data-testid="bq-backfill-rules">${backfillRules(report.backfill)}</span>。型号上挂到加急、并且无进度的有 <b data-testid="bq-model-urgent-stall">${bq ? bq.urgentStall : "—"}</b> 个。加急且无进度的奔强订单有 <b data-testid="bq-order-urgent-stall">${report.orderUrgentStall}</b> 单。订单逐单统计（生产编号+厂编，其次生产编号，再次厂编）：
       推进 <b data-testid="bq-order-advance">${report.orderCounts["工序推进"] || 0}</b>，
       无进度 <b data-testid="bq-order-stall">${report.orderCounts["无进度"] || 0}</b>，
+      回退 <b data-testid="bq-order-back">${report.orderCounts["工序回退"] || 0}</b>，
+      顺序未知 <b data-testid="bq-order-unknown">${report.orderCounts["工序变化(顺序未知)"] || 0}</b>，
       已出 <b data-testid="bq-order-out">${report.orderCounts["已出WIP"] || 0}</b>，
       新增 <b data-testid="bq-order-new">${report.orderCounts["今日新增"] || 0}</b>，
       未在WIP <b data-testid="bq-order-miss">${report.orderCounts["未在WIP"] || 0}</b>，
@@ -664,13 +883,13 @@ function esc(value) {
 }
 
 async function downloadDaily(kind) {
-  const date = state.dailyDate || buildReport(state.records).asOf;
+  const date = state.dailyDate || buildReport(state.records, { catalogs: state.orderLists }).asOf;
   if (!date) return;
   const result = kind === "all"
-    ? await buildDailyZip(state.records, date)
+    ? await buildDailyZip(state.records, date, state.orderLists)
     : kind === "one"
-      ? await buildOneDaily(state.records, date)
-      : await buildDailyWorkbook(state.records, date, kind);
+      ? await buildOneDaily(state.records, date, { catalogs: state.orderLists, stars: state.stars, notes: state.notes })
+      : await buildDailyWorkbook(state.records, date, kind, state.orderLists);
   if (result.error && !result.buffer) {
     state.log.push({ kind: "bad", text: result.error });
     state.tab = "import";
@@ -707,16 +926,21 @@ function downloadBook(book, filename) {
 }
 
 function exportBackup() {
-  const payload = {
-    app: "hx-wip-tracker",
-    version: 2,
-    exportedAt: new Date().toISOString(),
+  const payload = buildBackup({
     files: state.records,
     stars: [...state.stars].map((id) => {
       const cut = id.indexOf("|");
       return { id, supplier: id.slice(0, cut), prodNo: id.slice(cut + 1) };
     }),
-  };
+    notes: [...state.notes.entries()].filter(([, note]) => note).map(([id, note]) => {
+      const cut = id.indexOf("|");
+      return { id, supplier: id.slice(0, cut), prodNo: id.slice(cut + 1), note };
+    }),
+    processOrders: ["奔强", "捷德"].filter((supplier) => state.orderLists[supplier] && state.orderLists[supplier].length).map((supplier) => ({
+      supplier,
+      items: state.orderLists[supplier],
+    })),
+  });
   const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
@@ -729,22 +953,21 @@ async function importBackupFile(file) {
   if (!file) return;
   try {
     const payload = JSON.parse(await file.text());
-    if (!payload || payload.app !== "hx-wip-tracker" || !Array.isArray(payload.files)) {
-      throw new Error("不是本工具导出的备份");
-    }
-    const ok = await ask("导入备份", `备份里有 ${payload.files.length} 份表，将替换这台电脑上现有的货期数据。`);
+    const parsed = readBackup(payload);
+    const ok = await ask("导入备份", `备份里有 ${parsed.files.length} 份表，将替换这台电脑上现有的货期数据。`);
     if (!ok) return;
-    const files = payload.files.filter((item) => item && item.id && item.supplier && item.kind);
-    const stars = Array.isArray(payload.stars) ? payload.stars.filter((item) => item && item.supplier && item.prodNo).map((item) => ({
-      id: starId(item.supplier, item.prodNo),
-      supplier: item.supplier,
-      prodNo: item.prodNo,
-    })) : [];
-    await replaceAll(files);
-    await replaceStars(stars);
+    await replaceAll(parsed.files);
+    await replaceStars(parsed.stars);
+    await replaceNotes(parsed.notes);
+    if (parsed.processOrders) await replaceProcessOrders(parsed.processOrders);
     state.records = await listFiles();
-    state.stars = new Set(stars.map((item) => item.id));
-    state.log = [{ kind: "info", text: `已从备份恢复 ${files.length} 份表。` }];
+    state.stars = new Set(parsed.stars.map((item) => item.id));
+    state.notes = new Map(parsed.notes.map((item) => [item.id, item.note]));
+    if (parsed.processOrders) {
+      state.orderLists = { 奔强: null, 捷德: null };
+      for (const row of parsed.processOrders) state.orderLists[row.supplier] = row.items;
+    }
+    state.log = [{ kind: "info", text: `已从备份恢复 ${parsed.files.length} 份表。` }];
     state.tab = "import";
     document.querySelectorAll(".tabs button").forEach((item) => item.classList.toggle("on", item.dataset.tab === "import"));
     render();
