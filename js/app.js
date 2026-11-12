@@ -1,6 +1,7 @@
 import { buildReport, compareFocus, dueBucket, MODEL_TYPES, ORDER_TYPES } from "./logic.js";
 import { parseWorkbook } from "./parse.js";
 import { buildFocusWorkbook, buildStatsWorkbook, workbookBytes } from "./export.js";
+import { buildDailyWorkbook, buildDailyZip, dailyStatus } from "./daily.js";
 import { listFiles, listStars, putStar, deleteStar, replaceStars, putFile, deleteFile, replaceAll, clearAll, sha256, starId } from "./db.js";
 
 const app = document.querySelector("#app");
@@ -149,6 +150,13 @@ function bind() {
   if (focusSupplier) focusSupplier.addEventListener("change", () => { state.focusSupplier = focusSupplier.value; render(); });
   const focusQuery = document.querySelector("#focus-q");
   if (focusQuery) focusQuery.addEventListener("input", () => { state.focusQuery = focusQuery.value; render(); });
+  const dailyDate = document.querySelector("#daily-date");
+  if (dailyDate) dailyDate.addEventListener("change", () => { state.dailyDate = dailyDate.value; render(); });
+  document.querySelectorAll("[data-daily]").forEach((button) => {
+    button.addEventListener("click", () => downloadDaily(button.dataset.daily));
+  });
+  const dailyAll = document.querySelector("#daily-all");
+  if (dailyAll) dailyAll.addEventListener("click", () => downloadDaily("all"));
   document.querySelectorAll("[data-star]").forEach((button) => {
     button.addEventListener("click", async () => {
       const id = button.dataset.star;
@@ -248,6 +256,7 @@ function viewImport(report) {
       <div class="table-wrap">${table(["文件", "供应商", "类型", "行数", "归属日期", "日期来源", ""], rows || `<tr><td colspan="7">还没有数据。</td></tr>`)}</div>
     </section>
     ${summaryCards(report)}
+    ${dailyPanel(report)}
   </div>`;
 }
 
@@ -534,6 +543,29 @@ function stat(testid, value, label, tone) {
   return `<div class="stat ${tone || ""}"><b data-testid="${testid}">${value}</b><span>${esc(label)}</span></div>`;
 }
 
+function dailyPanel(report) {
+  const date = state.dailyDate || report.asOf || "";
+  const status = dailyStatus(state.records, date);
+  const buttons = [
+    ["benqiangCompare", "奔强两日进度对比", status.benqiangCompare],
+    ["benqiangMatch", "奔强订单 WIP 匹配", status.benqiangMatch],
+    ["jiedeMatch", "捷德订单 WIP 匹配", status.jiedeMatch],
+    ["jiedeTri", "捷德三日进度对比", status.jiedeTri],
+  ];
+  return `<section class="card stack">
+    <h2>生成日报表格</h2>
+    <p class="help">按所选日期生成本来手工做的四份工作簿，列、冻结和进度底色与原来的模板一致。文件在本机生成，不会上传。缺数据时会说明缺哪一天，不会中断页面。</p>
+    <div class="filters">
+      <label class="field">日期<input id="daily-date" type="date" value="${esc(date)}"></label>
+      <button type="button" id="daily-all" ${date ? "" : "disabled"}>下载全部</button>
+    </div>
+    <div class="row-actions">
+      ${buttons.map(([kind, label, missing]) => `<button type="button" data-daily="${kind}" ${missing ? "disabled" : ""}>${label}</button>`).join("")}
+    </div>
+    <div class="log">${buttons.filter((item) => item[2]).map((item) => `<div class="bad">${esc(item[1])}：${esc(item[2])}</div>`).join("") || `<div>四份表都可以生成。</div>`}</div>
+  </section>`;
+}
+
 function statsTable(report) {
   const rows = report.dailyStats.filter((item) => supplierOk(item.supplier));
   const body = rows.map((item) => `<tr data-stat-supplier="${esc(item.supplier)}" data-stat-date="${esc(item.date)}">
@@ -622,6 +654,37 @@ function table(headers, body) {
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+}
+
+async function downloadDaily(kind) {
+  const date = state.dailyDate || buildReport(state.records).asOf;
+  if (!date) return;
+  const result = kind === "all"
+    ? await buildDailyZip(state.records, date)
+    : await buildDailyWorkbook(state.records, date, kind);
+  if (result.error && !result.buffer) {
+    state.log.push({ kind: "bad", text: result.error });
+    state.tab = "import";
+    render();
+    return;
+  }
+  const mime = kind === "all"
+    ? "application/zip"
+    : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  downloadBytes(result.buffer, result.filename, mime);
+  if (result.errors && result.errors.length) {
+    state.log.push({ kind: "info", text: `已下载能生成的表格。未生成：${result.errors.join("；")}` });
+    render();
+  }
+}
+
+function downloadBytes(bytes, filename, mime) {
+  const blob = new Blob([bytes], { type: mime });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1500);
 }
 
 function downloadBook(book, filename) {
