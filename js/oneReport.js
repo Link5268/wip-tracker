@@ -1,4 +1,4 @@
-import { classifyPresence, dateDiff, joinSteps } from "./logic.js";
+import { buildReport, classifyPresence, dateDiff, joinSteps } from "./logic.js";
 import { indexEntities, matchOrder, normKey } from "./lenient.js";
 import { catalogsFrom, compareBySequence, sequenceLabel } from "./processOrder.js";
 
@@ -401,7 +401,8 @@ export async function buildOneDaily(records, date, options) {
   writeRaw(book, tables);
   writeProgress(book.addWorksheet("WIP进度对比"), tables);
   writeOrders(book.addWorksheet("订单WIP进度"), tables);
-  writeFocus(book.addWorksheet("重点订单"), tables, settings);
+  const side = buildReport(records.filter((record) => !record.date || record.date <= date), { catalogs: settings.catalogs });
+  writeFocus(book.addWorksheet("重点订单"), tables, settings, side.wipOnly || []);
   const buffer = await book.xlsx.writeBuffer();
   return { filename: `WIP日报_${date}.xlsx`, buffer, tables };
 }
@@ -527,51 +528,79 @@ function urgentText(value) {
   return text === "加急" || text.startsWith("急");
 }
 
-function writeFocus(ws, tables, settings) {
-  paintHeader(ws.addRow(["关注", "加急", "客户", "生产编号", "客户型号", "客户PO", "厂编", "订单数量", "在制数量", "下单日", "交期", "距交期天数", "进度", "今日工序顺序", "匹配依据", "跟进备注", "第1天", "第1天工序", "第1天顺序", "第2天", "第2天工序", "第2天顺序", "第3天", "第3天工序", "第3天顺序"]));
-  const picked = tables.orders.filter((row) => {
-    const id = `${row.customer}|${row.prodNo}`;
-    return urgentText(row.urgent) || starred(settings.stars, id);
+function sheetDays(row) {
+  if (row.days && row.days.length) return [0, 1, 2].map((index) => row.days[index] || {});
+  const dates = (row.supplierDates || []).slice(-3);
+  const padded = [{}, {}, {}];
+  dates.forEach((date, index) => {
+    const cell = (row.dayCells && row.dayCells[date]) || {};
+    padded[3 - dates.length + index] = {
+      date,
+      text: cell.present ? (cell.text || "") : "",
+      seq: cell.present ? (cell.seqLabel || "") : "",
+    };
   });
-  for (const row of picked) {
-    const id = `${row.customer}|${row.prodNo}`;
-    const dueDays = dateDiff(row.due, tables.date);
+  return padded;
+}
+
+function focusIdentity(row) {
+  return row.trackId || `${row.customer || row.supplier}|${row.prodNo}`;
+}
+
+function writeFocus(ws, tables, settings, wipOnly) {
+  paintHeader(ws.addRow(["关注", "来源", "表", "加急", "客户", "生产编号", "生产型号", "投产单号", "产品编号", "客户型号", "客户PO", "厂编", "订单数量", "在制数量", "下单日", "交期", "距交期天数", "进度", "今日工序顺序", "匹配依据", "跟进备注", "第1天", "第1天工序", "第1天顺序", "第2天", "第2天工序", "第2天顺序", "第3天", "第3天工序", "第3天顺序"]));
+  const picked = tables.orders.filter((row) => {
+    const id = focusIdentity(row);
+    return urgentText(row.urgent) || starred(settings.stars, id);
+  }).map((row) => ({ ...row, origin: row.type === "未在WIP" ? "仅订单" : "订单+WIP", source: row.source || "" }));
+  const followedWip = (wipOnly || []).filter((row) => row.urgentFlag || starred(settings.stars, row.trackId));
+  for (const row of [...picked, ...followedWip]) {
+    const id = focusIdentity(row);
+    const dueDays = row.dueDays != null ? row.dueDays : dateDiff(row.due, tables.date);
+    const days = sheetDays(row);
     const added = ws.addRow([
       starred(settings.stars, id) ? "我关注的" : "",
+      row.origin || (row.wipOnly ? "仅WIP" : ""),
+      row.source || "",
       row.urgent || "",
       row.customer,
       row.prodNo,
+      row.wipSc || "",
+      row.wipPo || "",
+      row.productNo || "",
       row.custModel,
       row.po || "",
       row.factoryCode,
-      row.qty,
+      row.qty || row.orderQty || "",
       row.wipQty || "",
       row.orderDate,
       row.due,
       dueDays == null ? "" : dueDays,
       row.type,
       row.seqLabel || "",
-      row.basis,
+      row.basis || row.how || "",
       noteOf(settings.notes, id),
-      row.days[0].date, row.days[0].text, row.days[0].seq || "",
-      row.days[1].date, row.days[1].text, row.days[1].seq || "",
-      row.days[2].date, row.days[2].text, row.days[2].seq || "",
+      days[0].date || "", days[0].text || "", days[0].seq || "",
+      days[1].date || "", days[1].text || "", days[1].seq || "",
+      days[2].date || "", days[2].text || "", days[2].seq || "",
     ]);
-    paintType(added.getCell(13), row.type);
-    if (row.urgent) added.getCell(2).font = { bold: true, color: { argb: "FFC00000" } };
-    if (dueDays != null && dueDays <= 3) added.getCell(12).font = { bold: true, color: { argb: "FF9F1239" } };
+    paintType(added.getCell(18), row.type);
+    if (row.urgent) added.getCell(4).font = { bold: true, color: { argb: "FFC00000" } };
+    if (dueDays != null && dueDays <= 3) added.getCell(17).font = { bold: true, color: { argb: "FF9F1239" } };
   }
   freeze(ws);
-  widths(ws, [12, 10, 10, 16, 24, 18, 16, 12, 12, 12, 12, 12, 18, 16, 18, 24, 12, 22, 14, 12, 22, 14, 12, 22, 14]);
+  widths(ws, [12, 12, 10, 10, 10, 16, 16, 16, 16, 24, 18, 16, 12, 12, 12, 12, 12, 18, 16, 18, 24, 12, 22, 14, 12, 22, 14, 12, 22, 14]);
 }
 
 export async function buildSearchWorkbook(rows) {
   const book = workbook();
   const ws = book.addWorksheet("重点订单查询");
-  paintHeader(ws.addRow(["关注", "加急", "客户", "生产编号", "客户型号", "客户PO", "生产型号", "厂编", "投产单号", "客户料号", "订单数量", "在制数量", "下单日", "交期", "距交期天数", "进度", "今日工序顺序", "匹配依据", "跟进备注"]));
+  paintHeader(ws.addRow(["关注", "来源", "表", "加急", "客户", "生产编号", "客户型号", "客户PO", "生产型号", "厂编", "投产单号", "客户料号", "产品编号", "订单数量", "在制数量", "下单日", "交期", "距交期天数", "进度", "今日工序顺序", "匹配依据", "跟进备注"]));
   for (const row of rows) {
     const added = ws.addRow([
       row.starred ? "我关注的" : "",
+      row.origin || "",
+      row.source || "",
       row.urgent || "",
       row.supplier,
       row.prodNo,
@@ -581,6 +610,7 @@ export async function buildSearchWorkbook(rows) {
       row.factoryCode || "",
       row.wipPo || "",
       row.wipPn || "",
+      row.productNo || "",
       row.orderQty || row.outQty || "",
       row.wipQty || "",
       row.orderDate || "",
@@ -591,8 +621,8 @@ export async function buildSearchWorkbook(rows) {
       row.how || "",
       row.note || "",
     ]);
-    paintType(added.getCell(16), row.type);
-    if (row.dueDays != null && row.dueDays <= 3) added.getCell(15).font = { bold: true, color: { argb: "FF9F1239" } };
+    paintType(added.getCell(19), row.type);
+    if (row.dueDays != null && row.dueDays <= 3) added.getCell(18).font = { bold: true, color: { argb: "FF9F1239" } };
   }
   freeze(ws);
   widths(ws, [12, 10, 10, 16, 24, 18, 16, 16, 16, 16, 12, 12, 12, 12, 12, 18, 16, 18, 28]);

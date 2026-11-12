@@ -155,4 +155,80 @@ assert.equal(restored.stars[0].id, "奔强|PN10001");
 assert.equal(restored.processOrders[0].items[0].seq, 2);
 assert.equal(restored.files.length, 1);
 
+const mixed = buildReport([
+  {
+    id: "w1", supplier: "奔强", kind: "wip", subtype: "y099", date: "2026-11-10", importedAt: "1", rowCount: 2,
+    models: [
+      { key: "y099|MATCH1|PNMATCH", source: "y099", sc: "MATCH1", pn: "PNMATCH", pnU: "PNMATCH", scU: "MATCH1", cm: "ORDER-MODEL", po: "PO-1", orderedAt: "2026-11-01", steps: ["开料"], rows: 1 },
+      { key: "y099|LONE1|", source: "y099", sc: "LONE1", pn: "", pnU: "", scU: "LONE1", cm: "WIP-ONLY-MODEL", po: "PO-WIP", orderedAt: "2026-11-02", steps: ["工程"], rows: 1 },
+    ],
+  },
+  {
+    id: "w2", supplier: "奔强", kind: "wip", subtype: "y099", date: "2026-11-11", importedAt: "2", rowCount: 2,
+    models: [
+      { key: "y099|MATCH1|PNMATCH", source: "y099", sc: "MATCH1", pn: "PNMATCH", pnU: "PNMATCH", scU: "MATCH1", cm: "ORDER-MODEL", po: "PO-1", orderedAt: "2026-11-01", steps: ["层压"], rows: 1 },
+      { key: "y099|LONE1|", source: "y099", sc: "LONE1", pn: "", pnU: "", scU: "LONE1", cm: "WIP-ONLY-MODEL", po: "PO-WIP", orderedAt: "2026-11-02", steps: ["开料"], rows: 1 },
+    ],
+  },
+  {
+    id: "o1", supplier: "奔强", kind: "order", subtype: "", date: "2026-11-11", importedAt: "3",
+    orders: [{ urgent: "", prodNo: "PNMATCH", factoryCode: "OTHER-CODE", custModel: "ORDER-MODEL", po: "PO-1", status: "已外发", due: "2026-11-20", outQty: "8", orderQty: "8" }],
+  },
+  {
+    id: "j1", supplier: "捷德", kind: "wip", subtype: "310", date: "2026-11-11", importedAt: "4", rowCount: 2,
+    tickets: [
+      { po: "JK-MATCH", model: "JD-ORDER", modelKey: "JD-ORDER", qty: "3", productNo: "P-1", orderDate: "2026-11-01", due: "2026-11-18", steps: ["开料"] },
+      { po: "JK-LONE", model: "JD-WIP-ONLY", modelKey: "JD-WIP-ONLY", qty: "4", productNo: "P-2", orderDate: "2026-11-02", due: "2026-11-19", steps: ["钻孔"] },
+    ],
+    batches: [
+      { po: "JK-MATCH", model: "JD-ORDER", modelKey: "JD-ORDER", modelKeyU: "JD-ORDER", qty: "3", productNo: "P-1", orderDate: "2026-11-01", due: "2026-11-18", display: "开料 3", steps: ["开料"] },
+      { po: "JK-LONE", model: "JD-WIP-ONLY", modelKey: "JD-WIP-ONLY", modelKeyU: "JD-WIP-ONLY", qty: "4", productNo: "P-2", orderDate: "2026-11-02", due: "2026-11-19", display: "钻孔 4", steps: ["钻孔"] },
+    ],
+  },
+  {
+    id: "jo", supplier: "捷德", kind: "order", subtype: "", date: "2026-11-11", importedAt: "5",
+    orders: [{ urgent: "", prodNo: "JDORDER1", factoryCode: "", custModel: "JD-ORDER", status: "已外发", due: "2026-11-18", outQty: "3" }],
+  },
+]);
+const catalog = [...mixed.orderRows, ...mixed.wipOnly].map((row) => ({
+  ...row,
+  origin: row.wipOnly ? "仅WIP" : ((row.supplierDates || []).some((date) => row.dayCells[date] && row.dayCells[date].present) ? "订单+WIP" : "仅订单"),
+  starred: false,
+}));
+assert.equal(mixed.wipOnly.length, 2);
+assert.equal(mixed.wipOnly.find((row) => row.wipSc === "MATCH1"), undefined);
+assert.equal(mixed.wipOnly.find((row) => row.wipPo === "JK-MATCH"), undefined);
+const lone = mixed.wipOnly.find((row) => row.wipSc === "LONE1");
+assert.equal(lone.trackId, "奔强|WIP|y099|LONE1|");
+assert.equal(lone.origin, "仅WIP");
+assert.equal(lone.type, "工序推进");
+assert.equal(lone.seqLabel, "第2/105道");
+assert.equal(lone.custModel, "WIP-ONLY-MODEL");
+const jdLone = mixed.wipOnly.find((row) => row.wipPo === "JK-LONE");
+assert.equal(jdLone.trackId, "捷德|WIP|310|JK-LONE");
+assert.equal(jdLone.productNo, "P-2");
+assert.equal(jdLone.seqLabel, "第8/60道");
+assert.equal(searchOrders(catalog, { query: "LONE1", field: "生产型号" }).rows[0].trackId, lone.trackId);
+assert.equal(searchOrders(catalog, { query: "lone1", field: "厂编" }).rows[0].origin, "仅WIP");
+assert.equal(searchOrders(catalog, { query: "P-2", field: "产品编号" }).rows[0].wipPo, "JK-LONE");
+const byModelNo = searchOrders(catalog, { query: "MATCH1", field: "生产型号" }).rows;
+assert.equal(byModelNo.length, 1);
+assert.equal(byModelNo[0].prodNo, "PNMATCH");
+assert.equal(byModelNo[0].origin, "订单+WIP");
+const byTicket = searchOrders(catalog, { query: "JK-MATCH", field: "投产单号" }).rows;
+assert.equal(byTicket.length, 1);
+assert.equal(byTicket[0].prodNo, "JDORDER1");
+assert.equal(byTicket[0].origin, "订单+WIP");
+const mixedBatch = searchOrders(catalog, { query: "PNMATCH，LONE1\nNOPE-404", field: "全部" });
+assert.deepEqual(mixedBatch.rows.map((row) => row.origin).sort(), ["仅WIP", "订单+WIP"]);
+assert.deepEqual(mixedBatch.missed, ["NOPE-404"]);
+const kept = readBackup(buildBackup({
+  files: [{ id: "f", supplier: "奔强", kind: "wip" }],
+  stars: [{ id: "奔强|WIP|y099|LONE1|", supplier: "奔强", prodNo: "WIP|y099|LONE1|" }],
+  notes: [{ id: "奔强|WIP|y099|LONE1|", supplier: "奔强", prodNo: "WIP|y099|LONE1|", note: "只在WIP" }],
+  processOrders: [],
+}));
+assert.equal(kept.stars[0].id, "奔强|WIP|y099|LONE1|");
+assert.equal(kept.notes[0].note, "只在WIP");
+
 console.log("synthetic ok");

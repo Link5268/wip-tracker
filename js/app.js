@@ -161,7 +161,7 @@ function bind() {
   const exportFocus = document.querySelector("#export-focus");
   if (exportFocus) exportFocus.addEventListener("click", async () => {
     const current = buildReport(state.records, { from: state.dateFrom, to: state.dateTo, catalogs: state.orderLists });
-    const rows = focusResult(current).rows.map((row) => ({ ...row, note: state.notes.get(starId(row.supplier, row.prodNo)) || "" }));
+    const rows = focusResult(current).rows.map((row) => ({ ...row, note: state.notes.get(rowTrackId(row)) || "" }));
     const result = await buildSearchWorkbook(rows);
     downloadBytes(result.buffer, result.filename, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   });
@@ -483,28 +483,25 @@ function viewDue(report) {
 function viewFocus(report) {
   const found = focusResult(report);
   const rows = found.rows;
-  const dates = focusDates(report, rows);
   const single = rows.length === 1 ? rows[0] : null;
-  const opened = single || rows.find((row) => starId(row.supplier, row.prodNo) === state.focusOpen) || null;
+  const opened = single || rows.find((row) => rowTrackId(row) === state.focusOpen) || null;
   const body = rows.map((row) => {
-    const id = starId(row.supplier, row.prodNo);
-    const open = opened && starId(opened.supplier, opened.prodNo) === id;
-    const days = dates.map((date) => {
-      const cell = row.dayCells[date] || {};
-      return `<td class="steps">${esc(cell.text || "—")}<br><span class="muted">${esc(cell.seqLabel || "—")}</span></td>`;
-    }).join("");
-    const detail = open ? `<tr class="detail"><td colspan="${6 + dates.length}">${dayDetail(row, dates)}</td></tr>` : "";
+    const id = rowTrackId(row);
+    const open = opened && rowTrackId(opened) === id;
+    const dates = rowDates(row);
+    const detail = open ? `<tr class="detail"><td colspan="8">${dayDetail(row, dates)}</td></tr>` : "";
     return `<tr class="${STATUS_CLASS[row.type] || ""}" data-open="${esc(id)}" data-testid="order-row">
       <td>${starButton(row)}</td>
+      <td data-field="来源">${esc(row.origin || "")}</td>
       <td>${tag(row.type)}</td>
       <td>${esc(row.supplier)}</td>
-      <td>${esc(row.prodNo)}</td>
+      <td>${esc(row.source || "")}</td>
+      <td>${esc(row.prodNo || row.wipPo || row.wipSc || row.productNo)}</td>
       <td>${esc(row.custModel)}</td>
-      <td>${esc(row.how)}</td>
-      ${days}
+      <td>${esc(row.seqLabel || "-")}</td>
     </tr>${detail}`;
   }).join("");
-  const head = ["关注", "进度", "客户", "生产编号", "客户型号", "匹配依据", ...dates];
+  const head = ["关注", "来源", "进度", "客户", "表", "编号", "客户型号", "当前工序"];
   const missed = found.missed.length ? `<p class="missed" data-testid="search-missed">没有对上：${found.missed.map((item) => esc(item)).join("、")}</p>` : "";
   return `<div class="stack">
     <section class="card filters">
@@ -528,22 +525,29 @@ function viewFocus(report) {
       <button type="button" id="export-focus">导出查询结果</button>
     </section>
     <section class="card">
-      <label class="field">查订单
-        <textarea id="focus-q" rows="3" placeholder="输入生产编号、客户PO或客户型号。多个编号用换行、逗号或空格分开">${esc(state.focusQuery)}</textarea>
+      <label class="field">查订单或 WIP
+        <textarea id="focus-q" rows="3" placeholder="生产编号、客户PO、客户型号、生产型号、投产单号都可以。多个用换行或逗号分开">${esc(state.focusQuery)}</textarea>
       </label>
-      <p class="help">会在客户型号、生产编号、生产型号、厂编、投产单号、客户料号、客户PO 里做包含匹配，不分大小写，全角半角和空格会先折掉。下拉框可以只查其中一个字段。只找到一单时，上面直接出订单卡片；找到多单时，点一行展开。</p>
+      <p class="help">伯仁订单和还没对上订单的 WIP 一起查。字段有客户型号、生产编号、生产型号、厂编、投产单号、客户料号、客户PO、产品编号。包含匹配，不分大小写，全角半角和空格会先折掉。来源分「订单+WIP」「仅订单」「仅WIP」。只找到一条时直接出卡片；找到多条时点一行展开。</p>
       ${missed}
     </section>
-    ${opened ? orderCard(opened, dates) : ""}
+    ${opened ? (opened.wipOnly ? wipCard(opened) : orderCard(opened, rowDates(opened))) : ""}
     <section class="card">
       <h2>查询结果 <b data-testid="focus-count">${rows.length}</b></h2>
-      <div class="table-wrap">${table(head, body || `<tr><td colspan="${head.length}">${found.idle ? "输入编号后就会列出订单。" : "没有符合条件的订单。"}</td></tr>`)}</div>
+      <div class="table-wrap">${table(head, body || `<tr><td colspan="${head.length}">${found.idle ? "输入编号后就会列出订单和仅 WIP 的型号。" : "没有符合条件的订单或 WIP。"}</td></tr>`)}</div>
     </section>
   </div>`;
 }
 
 function focusResult(report) {
-  const rows = report.orderRows.map((row) => ({ ...row, starred: state.stars.has(starId(row.supplier, row.prodNo)) }));
+  const rows = [...report.orderRows, ...(report.wipOnly || [])].map((row) => {
+    const present = (row.supplierDates || []).some((date) => row.dayCells[date] && row.dayCells[date].present);
+    return {
+      ...row,
+      origin: row.wipOnly ? "仅WIP" : (present ? "订单+WIP" : "仅订单"),
+      starred: state.stars.has(rowTrackId(row)),
+    };
+  });
   const found = searchOrders(rows, {
     query: state.focusQuery,
     field: state.focusField,
@@ -552,6 +556,10 @@ function focusResult(report) {
   });
   found.rows.sort(compareFocus);
   return found;
+}
+
+function rowDates(row) {
+  return (row.supplierDates || []).filter((date) => row.dayCells[date] && row.dayCells[date].snapshot).slice(-5);
 }
 
 function focusDates(report, rows) {
@@ -570,8 +578,48 @@ function dayDetail(row, dates) {
   return `<ol class="timeline">${items || "<li>这几天没有 WIP。</li>"}</ol>`;
 }
 
+function wipCard(row) {
+  const id = rowTrackId(row);
+  const dates = rowDates(row);
+  const dueClass = row.dueDays != null && row.dueDays <= 3 ? "late" : "";
+  const note = state.notes.get(id) || "";
+  const cells = [
+    ["客户", row.supplier],
+    ["表", row.source],
+    ["生产型号", row.wipSc],
+    ["厂编", row.factoryCode],
+    ["客户型号", row.custModel],
+    ["客户料号", row.wipPn],
+    ["投产单号", row.wipPo],
+    ["产品编号", row.productNo],
+    ["客户PO", row.po],
+    ["数量", row.wipQty || row.orderQty],
+    ["下单日", row.orderDate],
+    ["交货日期", row.shipDate],
+    ["最新交期", row.due],
+    ["当前工序", row.seqLabel],
+  ];
+  return `<article class="card order-card" data-testid="wip-card">
+    <div class="card-head">
+      <h2>WIP 卡片</h2>
+      ${starButton(row)}
+    </div>
+    <p class="missed" data-testid="wip-only-flag">仅WIP，伯仁订单无此单</p>
+    <dl>
+      ${cells.map(([label, value]) => `<div><dt>${label}</dt><dd data-field="${esc(label)}">${dash(value)}</dd></div>`).join("")}
+      <div><dt>距交期天数</dt><dd data-field="距交期天数" class="${dueClass}">${row.dueDays == null ? "-" : row.dueDays}</dd></div>
+      <div><dt>进度</dt><dd data-field="进度">${tag(row.type)}</dd></div>
+    </dl>
+    <h3>最近工序</h3>
+    ${dayDetail(row, dates)}
+    <label class="field">跟进备注
+      <textarea class="note-box" data-note="${esc(id)}" data-testid="order-note">${esc(note)}</textarea>
+    </label>
+  </article>`;
+}
+
 function orderCard(row, dates) {
-  const id = starId(row.supplier, row.prodNo);
+  const id = rowTrackId(row);
   const dueClass = row.dueDays != null && row.dueDays <= 3 ? "late" : "";
   const note = state.notes.get(id) || "";
   const cells = [
@@ -807,8 +855,12 @@ function statsTable(report) {
   </section>`;
 }
 
+function rowTrackId(row) {
+  return row.trackId || starId(row.supplier, row.prodNo);
+}
+
 function starButton(row) {
-  const id = starId(row.supplier, row.prodNo);
+  const id = rowTrackId(row);
   const on = state.stars.has(id);
   return `<button type="button" class="star" data-star="${esc(id)}" aria-pressed="${on ? "true" : "false"}" aria-label="我关注的">${on ? "★" : "☆"}</button>`;
 }

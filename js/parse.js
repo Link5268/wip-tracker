@@ -203,6 +203,8 @@ function parseJiede(rows) {
   const qtyCol = header.indexOf("销售合同数量");
   const dueCol = header.indexOf("最新交期");
   const shipCol = header.indexOf("交货日期");
+  const productCol = header.indexOf("产品编号");
+  const orderDateCol = header.indexOf("下单日期");
   const poCol = poColumn(header, rows, headerIndex);
   const names = [];
   for (let index = span.start; index <= span.end; index += 1) names.push(header[index] || "");
@@ -236,6 +238,10 @@ function parseJiede(rows) {
       modelKey,
       modelKeyU: modelKey.toUpperCase(),
       qty: clean(cellText(cellAt(row, qtyCol))),
+      productNo: clean(cellAt(row, productCol)),
+      orderDate: asDate(cellAt(row, orderDateCol)),
+      shipDate: asDate(cellAt(row, shipCol)),
+      due: asDate(cellAt(row, dueCol)) || asDate(cellAt(row, shipCol)),
       display: columnDisplay(hits),
       steps: dedupe(hits.map((hit) => hit.name)),
     };
@@ -247,6 +253,9 @@ function parseJiede(rows) {
       model,
       modelKey,
       qty: batch.qty,
+      productNo: batch.productNo,
+      orderDate: batch.orderDate,
+      shipDate: batch.shipDate,
       due: asDate(cellAt(row, dueCol)) || asDate(cellAt(row, shipCol)),
       far: farHit ? farHit.order : 0,
       near,

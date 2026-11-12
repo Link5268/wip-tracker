@@ -309,9 +309,13 @@ function mergeTickets(files) {
       if ((ticket.near || 0) > 0) prev.near = prev.near ? Math.min(prev.near, ticket.near) : ticket.near;
       prev.nproc = (prev.nproc || 0) + (ticket.nproc || 0);
       prev.sig = `${prev.sig}/${ticket.sig}`;
-      prev.due = ticket.due || "";
+      prev.due = ticket.due || prev.due || "";
       prev.model = ticket.model || prev.model;
       prev.modelKey = ticket.modelKey || prev.modelKey;
+      prev.productNo = ticket.productNo || prev.productNo || "";
+      prev.orderDate = ticket.orderDate || prev.orderDate || "";
+      prev.shipDate = ticket.shipDate || prev.shipDate || "";
+      prev.qty = ticket.qty || prev.qty || "";
       for (const step of ticket.steps || []) if (!prev.steps.includes(step)) prev.steps.push(step);
     }
     batches.push(...(file.batches || []));
@@ -336,7 +340,18 @@ export function jiedeMatch(order, batches) {
   if (!sameModel.length) return { how: "未匹配", text: "未匹配", steps: [], present: false };
   const sameQty = sameModel.filter((batch) => batch.qty === qty && batch.display);
   const pool = sameQty.length ? sameQty : sameModel.filter((batch) => batch.display);
-  if (!pool.length) return { how: "无在制", text: "捷德:无在制数", steps: [], present: true };
+  if (!pool.length) {
+    const pos = [];
+    const productNos = [];
+    let orderDate = "";
+    for (const batch of sameModel) {
+      const po = clean(batch.po);
+      if (po && po !== "投产单号" && !["合计", "小计", "-", "补料", "双面", "多层"].includes(po) && !pos.includes(po)) pos.push(po);
+      if (batch.productNo && !productNos.includes(batch.productNo)) productNos.push(batch.productNo);
+      if (!orderDate && batch.orderDate) orderDate = batch.orderDate;
+    }
+    return { how: "无在制", text: "捷德:无在制数", steps: [], present: true, pos, qty: "", productNo: productNos.join(" "), orderDate };
+  }
   const text = pool.map((batch) => batch.display).join(" / ");
   const steps = [];
   for (const batch of pool) {
@@ -344,10 +359,15 @@ export function jiedeMatch(order, batches) {
   }
   const pos = [];
   const qtys = [];
-  for (const batch of pool) {
-    if (batch.po && !pos.includes(batch.po)) pos.push(batch.po);
-    if (batch.qty && !qtys.includes(batch.qty)) qtys.push(batch.qty);
+  const productNos = [];
+  let orderDate = "";
+  for (const batch of sameModel) {
+    const po = clean(batch.po);
+    if (po && po !== "投产单号" && !["合计", "小计", "-", "补料", "双面", "多层"].includes(po) && !pos.includes(po)) pos.push(po);
+    if (batch.productNo && !productNos.includes(batch.productNo)) productNos.push(batch.productNo);
+    if (!orderDate && batch.orderDate) orderDate = batch.orderDate;
   }
+  for (const batch of pool) if (batch.qty && !qtys.includes(batch.qty)) qtys.push(batch.qty);
   return {
     how: sameQty.length ? "数量" : "型号",
     text: `捷德:${text}`,
@@ -355,6 +375,8 @@ export function jiedeMatch(order, batches) {
     present: true,
     pos,
     qty: qtys.join(" / "),
+    productNo: productNos.join(" "),
+    orderDate,
   };
 }
 
@@ -627,6 +649,8 @@ export function buildReport(records, options = {}) {
         steps: matched.steps,
         pos: matched.pos || [],
         qty: matched.qty || "",
+        productNo: matched.productNo || "",
+        orderDate: matched.orderDate || "",
         seqLabel: matched.present ? sequenceLabel(matched.steps, catalogs["捷德"]) : "",
       };
     }
@@ -662,6 +686,7 @@ export function buildReport(records, options = {}) {
     orderCounts,
     orderUrgentStall,
     orderRows,
+    wipOnly: collectUnmatchedWip(bqDays.filter((day) => inRange(day.date)), jdDays.filter((day) => inRange(day.date)), (bqOrders && bqOrders.orders) || [], (jdOrders && jdOrders.orders) || [], catalogs, asOf),
     dailyStats: dailyStats(orderRows, catalogs),
     bqOrderTotal: (bqOrders && bqOrders.orders.length) || 0,
     jdOrderTotal: (jdOrders && jdOrders.orders.length) || 0,
@@ -767,8 +792,269 @@ function orderRow(order, supplier, type, how, dayCells, asOf, wipText, supplierD
     wipPn: wip ? wip.pn || "" : "",
     wipPo: wip && Array.isArray(wip.pos) ? wip.pos.filter(Boolean).join(" ") : "",
     wipQty: wip ? wip.qty || "" : "",
+    productNo: wip ? wip.productNo || "" : "",
     dayCells,
   };
+}
+
+const BLOCKED_PO = new Set(["合计", "小计", "-", "补料", "双面", "多层", "投产单号"]);
+
+function usablePo(value) {
+  const po = clean(value);
+  if (!po || BLOCKED_PO.has(po)) return "";
+  return po;
+}
+
+function orderHitsBenqiang(model, orders) {
+  const pn = model.pnU || "";
+  const sc = model.scU || "";
+  return orders.some((order) => {
+    const prodNo = clean(order.prodNo).toUpperCase();
+    const factory = clean(order.factoryCode).toUpperCase();
+    if (pn && prodNo && pn === prodNo) return true;
+    if (sc && factory && sc === factory) return true;
+    return false;
+  });
+}
+
+function orderHitsJiede(modelKeyU, orders) {
+  if (!modelKeyU) return false;
+  return orders.some((order) => excelModelKey(order.custModel).toUpperCase() === modelKeyU);
+}
+
+function presenceVerdict(dates, dayCells, catalog) {
+  const current = dates[dates.length - 1] || "";
+  const previous = dates.length > 1 ? dates[dates.length - 2] : "";
+  const onCurrent = !!(current && dayCells[current] && dayCells[current].present);
+  const onPrevious = !!(previous && dayCells[previous] && dayCells[previous].present);
+  if (!onCurrent && !onPrevious) {
+    return dates.slice(0, -1).some((date) => dayCells[date] && dayCells[date].present) ? "已出WIP" : "未在WIP";
+  }
+  return compareBySequence(
+    onPrevious ? dayCells[previous].steps : null,
+    onCurrent ? dayCells[current].steps : null,
+    onPrevious,
+    onCurrent,
+    catalog,
+  );
+}
+
+function wipRow(base, dates, dayCells, catalog, asOf) {
+  const type = presenceVerdict(dates, dayCells, catalog);
+  const current = dates[dates.length - 1] || "";
+  const latest = current && dayCells[current] && dayCells[current].present ? dayCells[current] : null;
+  return {
+    ...base,
+    wipOnly: true,
+    origin: "仅WIP",
+    urgent: "",
+    urgentFlag: false,
+    status: "",
+    type,
+    how: "未找到订单",
+    seqLabel: latest ? latest.seqLabel || "" : "",
+    dueDays: dateDiff(base.due, asOf),
+    supplierDates: dates,
+    dayCells,
+    wipText: latest ? latest.text || "" : "",
+  };
+}
+
+function collectUnmatchedWip(bqDays, jdDays, bqOrders, jdOrders, catalogs, asOf) {
+  const rows = [];
+  const bqCatalog = catalogs["奔强"];
+  const grouped = new Map();
+  for (const day of bqDays) {
+    for (const model of day.models.values()) {
+      if (orderHitsBenqiang(model, bqOrders)) continue;
+      if (!grouped.has(model.key)) {
+        grouped.set(model.key, {
+          key: model.key,
+          source: model.source,
+          sc: model.sc || "",
+          pn: model.pn || "",
+          cm: model.cm || "",
+          po: model.po || "",
+          orderedAt: model.orderedAt || "",
+          byDate: {},
+        });
+      }
+      const item = grouped.get(model.key);
+      item.byDate[day.date] = model;
+      if (model.cm) item.cm = model.cm;
+      if (model.po) item.po = model.po;
+      if (model.orderedAt) item.orderedAt = model.orderedAt;
+      if (model.pn) item.pn = model.pn;
+    }
+  }
+  for (const item of grouped.values()) {
+    const dates = datesForSource(bqDays, item.source);
+    const dayCells = {};
+    for (const date of dates) {
+      const model = item.byDate[date];
+      dayCells[date] = {
+        text: model ? joinSteps(model.steps) : "未在WIP",
+        present: !!model,
+        snapshot: true,
+        steps: model ? model.steps : [],
+        seqLabel: model ? sequenceLabel(model.steps, bqCatalog) : "",
+        sc: item.sc,
+        pn: item.pn,
+      };
+    }
+    const scKey = item.sc.toUpperCase();
+    const pnKey = item.pn.toUpperCase();
+    rows.push(wipRow({
+      trackId: `奔强|WIP|${item.source}|${scKey}|${pnKey}`,
+      supplier: "奔强",
+      customer: "奔强",
+      source: item.source,
+      prodNo: "",
+      factoryCode: item.sc,
+      wipSc: item.sc,
+      wipPn: item.pn,
+      custModel: item.cm,
+      po: item.po,
+      wipPo: "",
+      productNo: "",
+      orderQty: "",
+      wipQty: "",
+      orderDate: item.orderedAt,
+      due: "",
+    }, dates, dayCells, bqCatalog, asOf));
+  }
+
+  const jdCatalog = catalogs["捷德"];
+  const jdDates = jdDays.map((day) => day.date);
+  const tickets = new Map();
+  const looseModels = new Map();
+  for (const day of jdDays) {
+    for (const ticket of day.tickets.values()) {
+      const po = usablePo(ticket.po);
+      if (!po) continue;
+      const modelKeyU = (ticket.modelKey || excelModelKey(ticket.model)).toUpperCase();
+      if (orderHitsJiede(modelKeyU, jdOrders)) continue;
+      if (!tickets.has(po)) {
+        tickets.set(po, {
+          po,
+          model: ticket.model || "",
+          modelKeyU,
+          qty: ticket.qty || "",
+          productNo: ticket.productNo || "",
+          orderDate: ticket.orderDate || "",
+          due: ticket.due || "",
+          shipDate: ticket.shipDate || "",
+          byDate: {},
+        });
+      }
+      const item = tickets.get(po);
+      item.byDate[day.date] = ticket;
+      if (ticket.model) item.model = ticket.model;
+      if (ticket.qty) item.qty = ticket.qty;
+      if (ticket.productNo) item.productNo = ticket.productNo;
+      if (ticket.orderDate) item.orderDate = ticket.orderDate;
+      if (ticket.due) item.due = ticket.due;
+      if (ticket.shipDate) item.shipDate = ticket.shipDate;
+    }
+    for (const batch of day.batches || []) {
+      if (usablePo(batch.po)) continue;
+      const modelKeyU = batch.modelKeyU || excelModelKey(batch.model).toUpperCase();
+      if (!modelKeyU || orderHitsJiede(modelKeyU, jdOrders)) continue;
+      if (!looseModels.has(modelKeyU)) {
+        looseModels.set(modelKeyU, {
+          model: batch.model || "",
+          modelKeyU,
+          qty: batch.qty || "",
+          productNo: batch.productNo || "",
+          orderDate: batch.orderDate || "",
+          due: batch.due || "",
+          shipDate: batch.shipDate || "",
+          byDate: {},
+        });
+      }
+      const item = looseModels.get(modelKeyU);
+      if (!item.byDate[day.date]) item.byDate[day.date] = { steps: [] };
+      const held = item.byDate[day.date];
+      for (const step of batch.steps || []) if (!held.steps.includes(step)) held.steps.push(step);
+      if (batch.qty) item.qty = batch.qty;
+      if (batch.productNo) item.productNo = batch.productNo;
+      if (batch.orderDate) item.orderDate = batch.orderDate;
+      if (batch.due) item.due = batch.due;
+      if (batch.shipDate) item.shipDate = batch.shipDate;
+      if (batch.model) item.model = batch.model;
+    }
+  }
+  for (const item of tickets.values()) {
+    const dayCells = {};
+    for (const date of jdDates) {
+      const ticket = item.byDate[date];
+      dayCells[date] = {
+        text: ticket ? (ticket.steps && ticket.steps.length ? joinSteps(ticket.steps) : "无在制") : "未在WIP",
+        present: !!ticket,
+        snapshot: true,
+        steps: ticket ? ticket.steps || [] : [],
+        seqLabel: ticket ? sequenceLabel(ticket.steps, jdCatalog) : "",
+        pos: [item.po],
+        qty: item.qty,
+        productNo: item.productNo,
+      };
+    }
+    rows.push(wipRow({
+      trackId: `捷德|WIP|310|${item.po.toUpperCase()}`,
+      supplier: "捷德",
+      customer: "捷德",
+      source: "310",
+      prodNo: "",
+      factoryCode: "",
+      wipSc: "",
+      wipPn: "",
+      custModel: item.model,
+      po: "",
+      wipPo: item.po,
+      productNo: item.productNo,
+      orderQty: item.qty,
+      wipQty: item.qty,
+      orderDate: item.orderDate,
+      due: item.due,
+      shipDate: item.shipDate,
+    }, jdDates, dayCells, jdCatalog, asOf));
+  }
+  for (const item of looseModels.values()) {
+    if ([...tickets.values()].some((ticket) => ticket.modelKeyU === item.modelKeyU)) continue;
+    const dayCells = {};
+    for (const date of jdDates) {
+      const held = item.byDate[date];
+      dayCells[date] = {
+        text: held ? (held.steps.length ? joinSteps(held.steps) : "无在制") : "未在WIP",
+        present: !!held,
+        snapshot: true,
+        steps: held ? held.steps : [],
+        seqLabel: held ? sequenceLabel(held.steps, jdCatalog) : "",
+        qty: item.qty,
+        productNo: item.productNo,
+      };
+    }
+    rows.push(wipRow({
+      trackId: `捷德|WIP|310|${item.modelKeyU}|${clean(item.qty).toUpperCase()}`,
+      supplier: "捷德",
+      customer: "捷德",
+      source: "310",
+      prodNo: "",
+      factoryCode: "",
+      wipSc: "",
+      wipPn: "",
+      custModel: item.model,
+      po: "",
+      wipPo: "",
+      productNo: item.productNo,
+      orderQty: item.qty,
+      wipQty: item.qty,
+      orderDate: item.orderDate,
+      due: item.due,
+      shipDate: item.shipDate,
+    }, jdDates, dayCells, jdCatalog, asOf));
+  }
+  return rows;
 }
 
 export function compareFocus(a, b) {
