@@ -155,6 +155,7 @@ function parseBenqiang(rows, sheetName, filename) {
     subtype: source,
     rowCount,
     title: clean((rows[0] && rows[0][0]) || sheetName),
+    headers: header.filter((name) => name),
     lines,
     models: [...models.values()],
   };

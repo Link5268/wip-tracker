@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { classifyPresence, sameStepSet, triStatus, triRisk, jiedeMatch, dateDiff, buildReport, compareFocus } from "../js/logic.js";
 import { dailyStatus } from "../js/daily.js";
+import { matchOrder, indexEntities, normKey, usableKey } from "../js/lenient.js";
 
 assert.equal(sameStepSet(["钻孔", "电镀"], ["电镀", "钻孔"]), true);
 assert.equal(classifyPresence(["钻孔"], ["电镀", "钻孔"], true, true), "工序推进");
@@ -81,5 +82,18 @@ assert.equal(compareFocus({ type: "无进度", dueDays: 1, prodNo: "a" }, { type
 const missing = dailyStatus([], "2026-11-11");
 assert.equal(missing.benqiangCompare.includes("奔强 WIP"), true);
 assert.equal(missing.jiedeTri.includes("3"), true);
+assert.equal(normKey(" Ｙ099　abc "), "Y099ABC");
+assert.equal(usableKey("P19"), "");
+const entities = [
+  { id: "a", pn: "PN10001", sc: "SCMODEL1", cm: "MODEL-A", po: "JKTC10001", productNo: "P10001", qty: "10" },
+  { id: "b", pn: "PN10002", sc: "SCMODEL2", cm: "MODEL-A", po: "JKTC10002", productNo: "P10002", qty: "10" },
+];
+const indexed = indexEntities(entities);
+const unique = matchOrder({ prodNo: "PN10001", factoryCode: "SCMODEL1", custModel: "MODEL-A", outQty: "10" }, indexed);
+assert.equal(unique.basis, "生产编号+厂编");
+assert.equal(unique.many, false);
+const many = matchOrder({ prodNo: "ZZZZZZ", factoryCode: "", custModel: "MODEL-A", outQty: "" }, indexed);
+assert.equal(many.many, true);
+assert.equal(many.basis.includes("一对多"), true);
 
 console.log("synthetic ok");
