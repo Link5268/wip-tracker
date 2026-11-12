@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>环祥货期跟踪</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark">环祥</span>
+      <div>
+        <h1>货期跟踪</h1>
+        <p>捷德 · 奔强　WIP 与订单进度，只保存在这台电脑的浏览器里</p>
+      </div>
+    </div>
+    <p class="top-note" id="save-state">尚未导入</p>
+  </header>
+  <nav class="tabs" aria-label="功能">
+    <button type="button" data-tab="import" class="on">导入</button>
+    <button type="button" data-tab="days">五日进度</button>
+    <button type="button" data-tab="models">型号对比</button>
+    <button type="button" data-tab="urgent">加急无进度</button>
+    <button type="button" data-tab="due">交期预警</button>
+    <button type="button" data-tab="backup">备份</button>
+  </nav>
+  <main id="app"></main>
+  <dialog id="confirm">
+    <form method="dialog">
+      <h2 id="confirm-title">请确认</h2>
+      <p id="confirm-text"></p>
+      <div class="row-actions">
+        <button value="cancel" type="submit">取消</button>
+        <button value="ok" type="submit" class="danger">确定</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
