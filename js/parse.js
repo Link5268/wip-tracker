@@ -104,9 +104,11 @@ function parseBenqiang(rows, sheetName, filename) {
     cm: header.indexOf("客户型号"),
     po: header.indexOf("客户PO"),
     time: header.indexOf("下单时间"),
+    note: header.indexOf("备注"),
   };
   const source = benqiangSource(rows, sheetName, filename, headerIndex, col.sc);
   const models = new Map();
+  const lines = [];
   let rowCount = 0;
   for (let index = headerIndex + 1; index < rows.length; index += 1) {
     const row = rows[index] || [];
@@ -136,6 +138,15 @@ function parseBenqiang(rows, sheetName, filename) {
     model.rows += 1;
     if (!model.steps.includes(step)) model.steps.push(step);
     rowCount += 1;
+    lines.push({
+      sc,
+      cm: clean(cellAt(row, col.cm)),
+      pn,
+      po: clean(cellAt(row, col.po)),
+      orderedAt: asStamp(cellAt(row, col.time)),
+      step,
+      note: clean(cellAt(row, col.note)),
+    });
   }
   if (!rowCount) return null;
   return {
@@ -143,6 +154,8 @@ function parseBenqiang(rows, sheetName, filename) {
     kind: "wip",
     subtype: source,
     rowCount,
+    title: clean((rows[0] && rows[0][0]) || sheetName),
+    lines,
     models: [...models.values()],
   };
 }
@@ -252,6 +265,7 @@ function parseJiede(rows) {
     batches,
     tickets,
     models: [],
+    sheetMatrix: rows.slice(0, 800).map((row) => (row || []).slice(0, 80).map((cell) => (cell == null ? "" : cell))),
   };
 }
 
@@ -305,6 +319,17 @@ function parseOrders(rows) {
       supplierName: clean(cellAt(row, col("供应商"))),
       salesman: clean(cellAt(row, col("业务经理"))),
       po: clean(cellAt(row, col("客户PO"))),
+      shortName: clean(cellAt(row, col("客户简称"))),
+      boardType: clean(cellAt(row, col("类型"))),
+      orderKind: clean(cellAt(row, col("订单"))),
+      engNote: clean(cellAt(row, col("工程备注"))),
+      note: clean(cellAt(row, col("备注"))),
+      eqStart: clean(cellAt(row, col("EQ开始"))),
+      eqEnd: clean(cellAt(row, col("EQ结束"))),
+      eqHours: clean(cellAt(row, col("EQ耗时"))),
+      stockIn: clean(cellText(cellAt(row, col("已入库")))),
+      stockOut: clean(cellText(cellAt(row, col("已出库")))),
+      shortage: clean(cellText(cellAt(row, col("欠数")))),
     });
   }
   const records = [];

@@ -453,11 +453,13 @@ function alignBenqiangKeys(days) {
 export function buildReport(records, options = {}) {
   const from = options.from || "";
   const to = options.to || "";
-  const inRange = (date) => (!from || date >= from) && (!to || date <= to);
-  const bq = filesOn(records, "奔强", "wip");
-  const jd = filesOn(records, "捷德", "wip");
-  const bqOrders = latestOrderBook(records, "奔强");
-  const jdOrders = latestOrderBook(records, "捷德");
+  const asOfCap = options.asOf || "";
+  const inRange = (date) => (!from || date >= from) && (!to || date <= to) && (!asOfCap || date <= asOfCap);
+  const capped = asOfCap ? records.filter((record) => !record.date || record.date <= asOfCap) : records;
+  const bq = filesOn(capped, "奔强", "wip");
+  const jd = filesOn(capped, "捷德", "wip");
+  const bqOrders = latestOrderBook(capped, "奔强");
+  const jdOrders = latestOrderBook(capped, "捷德");
   const bqDays = bq.dates.map((date) => ({ date, ...benqiangDay(bq.map.get(date)) }));
   alignBenqiangKeys(bqDays);
   const jdDays = jd.dates.map((date) => ({ date, ...mergeTickets(jd.map.get(date)) }));
@@ -520,6 +522,7 @@ export function buildReport(records, options = {}) {
         present: !!model,
         snapshot: true,
         steps: model ? model.steps : [],
+        source: model ? model.source : "",
       };
     }
     const supplierDates = bqDates.filter((date) => date <= (asOf || "9999"));
