@@ -4,7 +4,7 @@ import { buildFocusWorkbook, buildStatsWorkbook, workbookBytes } from "./export.
 import { buildDailyWorkbook, buildDailyZip, dailyStatus } from "./daily.js";
 import { buildOneDaily, buildSearchWorkbook } from "./oneReport.js";
 import { listFiles, listStars, listNotes, putNote, replaceNotes, listProcessOrders, saveProcessOrder, deleteProcessOrder, replaceProcessOrders, putStar, deleteStar, replaceStars, putFile, deleteFile, replaceAll, clearAll, sha256, starId } from "./db.js";
-import { catalogsFrom, catalogFromItems, defaultCatalog, itemsFromSheetRows, BENQIANG_PENDING } from "./processOrder.js";
+import { catalogsFrom, catalogFromItems, defaultCatalog, itemsFromSheetRows } from "./processOrder.js";
 import { SEARCH_FIELDS, searchOrders } from "./orderSearch.js";
 import { buildBackup, readBackup } from "./backup.js";
 
@@ -24,7 +24,7 @@ const state = {
   stars: new Set(),
   notes: new Map(),
   orderLists: { 奔强: null, 捷德: null },
-  seqSupplier: "奔强",
+  seqSupplier: "捷德",
   focusSupplier: "全部",
   focusKind: "全部订单",
   focusField: "全部",
@@ -36,6 +36,7 @@ const state = {
 };
 
 const STATUS_CLASS = {
+  有变化: "st-go",
   工序推进: "st-go",
   无进度: "st-stop",
   工序回退: "st-back",
@@ -379,7 +380,7 @@ function viewDays(report) {
     ${statsTable(report)}
     <section class="card">
       <h2>最近 ${report.windowDates.length || 0} 个有 WIP 的日期</h2>
-      <p class="help">每个订单一行。工序按当天匹配到的型号去重后用「 + 」连接。较上日比的是顺序号：更大是工序推进，相同是无进度，更小是工序回退，有一边不在顺序表里是工序变化(顺序未知)。☆ 标成「我关注的」。</p>
+      <p class="help">每个订单一行。奔强只看工序名：和上一日相同是无进度，不同是有变化。捷德按顺序号：更大是工序推进，相同是无进度，更小是工序回退，对不上顺序表是工序变化(顺序未知)。☆ 标成「我关注的」。</p>
       <div class="legend">${ORDER_TYPES.map((type) => tag(type)).join("")}</div>
     </section>
     <div class="table-wrap">${table(head, rows || `<tr><td colspan="${head.length}">没有符合筛选的订单。</td></tr>`)}</div>
@@ -394,9 +395,7 @@ function viewModels(report) {
       <td>${esc(row.sc)}</td>
       <td>${esc(row.pn)}</td>
       <td>${esc(row.cm)}</td>
-      <td class="steps">${esc(row.prevText)}</td>
-      <td class="steps">${esc(row.currText)}</td>
-      <td>${esc(row.seqLabel || "")}</td>
+      ${(row.days || [{ text: row.prevText }, { text: "" }, { text: row.currText }]).map((day) => `<td class="steps">${day.date ? `<span class="muted">${esc(day.date)}</span><br>` : ""}${esc(day.text || "")}</td>`).join("")}
       <td>${row.prevRows || ""}</td>
       <td>${row.currRows || ""}</td>
       <td>${esc(row.prodNo)}</td>
@@ -418,8 +417,8 @@ function viewModels(report) {
     ${filters("搜索生产型号、客户料号、投产单号")}
     <section class="card">
       <h2>奔强型号明细</h2>
-      <p class="help">按「来源 + 生产型号 + 客户料号」汇总，y099 和 Y100 各自跟自己的上一份比。同一型号多行工序去重后用「 + 」连接，顺序号取当天最远的一道。无进度、回退用底色标出。</p>
-      <div class="table-wrap">${table(["变化", "加急", "来源", "生产型号", "客户料号", "客户型号", "上一日工序", "当日工序", "今日顺序", "上行数", "当日行数", "订单生产编号", "外发交期"], modelRows || `<tr><td colspan="13">${report.benqiang ? "没有符合筛选的型号。" : "至少需要两天奔强 WIP。"}</td></tr>`)}</div>
+      <p class="help">按「来源 + 生产型号 + 客户料号」汇总，y099 和 Y100 各自看自己最近最多三天。工序名和上一天相同是无进度，不同是有变化。不显示顺序号。</p>
+      <div class="table-wrap">${table(["变化", "加急", "来源", "生产型号", "客户料号", "客户型号", "第1天工序", "第2天工序", "第3天工序", "上行数", "当日行数", "订单生产编号", "外发交期"], modelRows || `<tr><td colspan="13">${report.benqiang ? "没有符合筛选的型号。" : "导入奔强 WIP 后这里列出最近三天。"}</td></tr>`)}</div>
     </section>
     <section class="card">
       <h2>捷德投产单（最近三天）</h2>
@@ -446,7 +445,7 @@ function viewUrgent(report) {
     ${filters("搜索加急单")}
     <section class="card">
       <h2>加急且无进度 <b data-testid="urgent-list-count">${rows.length}</b></h2>
-      <p class="help">加急列是「加急」或以「急」开头，并且较上一份 WIP 最远顺序号没有变化。奔强订单里这一类是 <span data-testid="bq-order-urgent-stall">${report.orderUrgentStall}</span> 单。</p>
+      <p class="help">加急列是「加急」或以「急」开头，并且较上一份 WIP 没有变化。奔强看的是工序名。奔强订单里这一类是 <span data-testid="bq-order-urgent-stall">${report.orderUrgentStall}</span> 单。</p>
       <div class="table-wrap">${table(["关注", "加急", "供应商", "生产编号", "厂编", "客户型号", "状态", "外发交期", "当前工序"], body || `<tr><td colspan="9">当前没有加急且无进度的订单。</td></tr>`)}</div>
     </section>
   </div>`;
@@ -498,7 +497,7 @@ function viewFocus(report) {
       <td>${esc(row.source || "")}</td>
       <td>${esc(row.prodNo || row.wipPo || row.wipSc || row.productNo)}</td>
       <td>${esc(row.custModel)}</td>
-      <td>${esc(row.seqLabel || "-")}</td>
+      <td>${esc(row.supplier === "捷德" ? (row.seqLabel || "-") : (row.wipText || "-"))}</td>
     </tr>${detail}`;
   }).join("");
   const head = ["关注", "来源", "进度", "客户", "表", "编号", "客户型号", "当前工序"];
@@ -559,7 +558,8 @@ function focusResult(report) {
 }
 
 function rowDates(row) {
-  return (row.supplierDates || []).filter((date) => row.dayCells[date] && row.dayCells[date].snapshot).slice(-5);
+  const dates = (row.supplierDates || []).filter((date) => row.dayCells[date] && row.dayCells[date].snapshot);
+  return dates.slice(row.supplier === "奔强" ? -3 : -5);
 }
 
 function focusDates(report, rows) {
@@ -573,7 +573,8 @@ function focusDates(report, rows) {
 function dayDetail(row, dates) {
   const items = dates.map((date) => {
     const cell = row.dayCells[date] || {};
-    return `<li><b>${esc(date)}</b><span>${esc(cell.text || "—")}</span><span>${esc(cell.seqLabel || "—")}</span></li>`;
+    const seq = row.supplier === "捷德" ? `<span>${esc(cell.seqLabel || "—")}</span>` : "";
+    return `<li><b>${esc(date)}</b><span>${esc(cell.text || "—")}</span>${seq}</li>`;
   }).join("");
   return `<ol class="timeline">${items || "<li>这几天没有 WIP。</li>"}</ol>`;
 }
@@ -597,7 +598,7 @@ function wipCard(row) {
     ["下单日", row.orderDate],
     ["交货日期", row.shipDate],
     ["最新交期", row.due],
-    ["当前工序", row.seqLabel],
+    ["当前工序", row.supplier === "捷德" ? row.seqLabel : (row.wipText || "")],
   ];
   return `<article class="card order-card" data-testid="wip-card">
     <div class="card-head">
@@ -631,7 +632,7 @@ function orderCard(row, dates) {
     ["下单日", row.orderDate],
     ["交期", row.due],
     ["是否加急", row.urgentFlag ? (row.urgent || "加急") : "否"],
-    ["当前工序", row.seqLabel],
+    ["当前工序", row.supplier === "捷德" ? row.seqLabel : (row.wipText || "")],
     ["在制数量", row.wipQty],
     ["匹配依据", row.how],
   ];
@@ -673,25 +674,41 @@ async function commitOrderItems(supplier, items) {
 
 function viewSequence() {
   const supplier = state.seqSupplier;
+  if (supplier === "奔强") {
+    const saved = state.orderLists["奔强"] && state.orderLists["奔强"].length;
+    return `<div class="stack">
+      <section class="card stack">
+        <h2>工序顺序</h2>
+        <div class="filters">
+          <label class="field">供应商
+            <select id="seq-supplier">
+              ${["捷德", "奔强"].map((item) => `<option ${item === supplier ? "selected" : ""}>${item}</option>`).join("")}
+            </select>
+          </label>
+        </div>
+        <p class="help">奔强不再使用固定工序顺序。各订单的工序先后不一样，不能共用一份 105 道顺序。奔强进度只看 WIP 工序名有没有变化。以前保存在这台电脑或 JSON 备份里的奔强顺序仍然可以读入，但不会参与比较。</p>
+        ${saved ? `<p class="help">这台电脑还存着一份旧的奔强顺序，当前不使用。</p><button type="button" id="seq-reset">清除已保存的奔强顺序</button>` : ""}
+      </section>
+    </div>`;
+  }
   const items = currentOrderItems(supplier);
   const custom = Boolean(state.orderLists[supplier] && state.orderLists[supplier].length);
-  const catalog = catalogsFrom(state.orderLists)[supplier];
+  const catalog = catalogsFrom({ 捷德: state.orderLists["捷德"] })["捷德"];
   const body = items.map((item) => `<tr>
     <td>${esc(item.name)}</td>
     <td><input data-seq="${esc(item.name)}" type="number" value="${item.seq}"></td>
     <td><button type="button" data-seq-del="${esc(item.name)}">删除</button></td>
   </tr>`).join("");
-  const pending = BENQIANG_PENDING.map((item) => `${item.name}：${item.note}`).join("；");
   return `<div class="stack">
     <section class="card stack">
       <h2>工序顺序</h2>
-      <p class="help">每个供应商一份。比较进度时，当天取能对上的最远顺序号。数字更大是工序推进，相同是无进度，更小是工序回退。对不上的名字算「工序变化(顺序未知)」。同名多条时用最小的顺序号。改动只存在这台电脑，并会写进 JSON 备份。当前是${custom ? "你保存的顺序" : "默认顺序"}，共 ${items.length} 条，显示成「第N/${catalog.total}道」。</p>
-      ${supplier === "奔强" ? `<p class="help">${esc(pending)}。可以在表里改数字，或自己导入。</p>` : `<p class="help">捷德默认是三日进度表「工序顺序」里的 60 道。</p>`}
+      <p class="help">捷德按这份顺序比较。当天取能对上的最远顺序号。数字更大是工序推进，相同是无进度，更小是工序回退。对不上的名字算「工序变化(顺序未知)」。改动只存在这台电脑，并会写进 JSON 备份。当前是${custom ? "你保存的顺序" : "默认顺序"}，共 ${items.length} 条，显示成「第N/${catalog.total}道」。奔强不使用工序顺序。</p>
+      <p class="help">捷德默认是三日进度表「工序顺序」里的 60 道。</p>
       ${state.seqMessage ? `<p class="missed">${esc(state.seqMessage)}</p>` : ""}
       <div class="filters">
         <label class="field">供应商
           <select id="seq-supplier">
-            ${["奔强", "捷德"].map((item) => `<option ${item === supplier ? "selected" : ""}>${item}</option>`).join("")}
+            ${["捷德", "奔强"].map((item) => `<option ${item === supplier ? "selected" : ""}>${item}</option>`).join("")}
           </select>
         </label>
         <button type="button" id="seq-reset">恢复默认</button>
@@ -746,13 +763,13 @@ function summaryCards(report) {
   const risk = (key) => (jd && jd.riskCounts[key]) || 0;
   const match = report.jdMatch ? report.jdMatch.counts : null;
   return `<section class="card stack" id="summary">
-    <h2>奔强型号两日对比</h2>
-    <p class="help">${bq ? `y099 <span data-testid="bq-prev-date">${esc((src("y099") && src("y099").prev) || "")}</span>→<span data-testid="bq-curr-date">${esc((src("y099") && src("y099").curr) || "")}</span>，Y100 ${esc((src("Y100") && src("Y100").prev) || "")}→${esc((src("Y100") && src("Y100").curr) || "")}。行数 y099 <span data-testid="bq-rows-y099">${bq.prevRows.y099 || 0}→${bq.currRows.y099 || 0}</span>，Y100 <span data-testid="bq-rows-y100">${bq.prevRows.Y100 || 0}→${bq.currRows.Y100 || 0}</span>。顺序号更大是推进，相同是无进度，更小是回退。` : "导入至少两天奔强 WIP 后，这里会出 y099 / Y100 的推进、无进度和回退。"}</p>
+    <h2>奔强型号三日对比</h2>
+    <p class="help">${bq ? `y099 ${(src("y099") && src("y099").dates || []).join("、") || "—"}，Y100 ${(src("Y100") && src("Y100").dates || []).join("、") || "—"}。最近两天 <span data-testid="bq-prev-date">${esc((src("y099") && src("y099").prev) || "")}</span>→<span data-testid="bq-curr-date">${esc((src("y099") && src("y099").curr) || "")}</span>。行数 y099 <span data-testid="bq-rows-y099">${bq.prevRows.y099 || 0}→${bq.currRows.y099 || 0}</span>，Y100 <span data-testid="bq-rows-y100">${bq.prevRows.Y100 || 0}→${bq.currRows.Y100 || 0}</span>。工序名变了是有变化，相同是无进度。` : "导入奔强 WIP 后，这里按 y099 / Y100 各自最近最多三天比较工序名。"}</p>
     <div class="table-wrap"><table>
       <thead><tr><th>变化</th><th>y099</th><th>Y100</th><th>合计</th></tr></thead>
       <tbody>
-        ${["工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增"].map((type) => {
-          const id = { 工序推进: "advance", 无进度: "stall", 工序回退: "back", "工序变化(顺序未知)": "unknown", 已出WIP: "out", 今日新增: "new" }[type];
+        ${["有变化", "无进度", "已出WIP", "今日新增"].map((type) => {
+          const id = { 有变化: "change", 无进度: "stall", 已出WIP: "out", 今日新增: "new" }[type];
           return `<tr class="${STATUS_CLASS[type] || ""}"><td>${tag(type)}</td>
             <td data-testid="bq-y099-${id}">${cell(src("y099"), "y099", type)}</td>
             <td data-testid="bq-y100-${id}">${cell(src("Y100"), "Y100", type)}</td>
@@ -764,11 +781,9 @@ function summaryCards(report) {
           <td data-testid="bq-all-models">${bq ? bq.counts.total : "—"}</td></tr>
       </tbody>
     </table></div>
-    <p class="help">工程暂定第 0 道，仓库暂定第 999 道（视为已完工），外发和 PCBA 不编顺序。这四项是默认值，等 Jay 确认，可在「工序顺序」里改。缺少客户料号时，按以前各天的「生产型号 → 客户料号」回填，比较用的键不变。本日回填并参与匹配的有 <b data-testid="bq-backfill-rows">${report.backfill.rows}</b> 行、<b data-testid="bq-backfill-models">${report.backfill.models}</b> 个型号<span data-testid="bq-backfill-rules">${backfillRules(report.backfill)}</span>。型号上挂到加急、并且无进度的有 <b data-testid="bq-model-urgent-stall">${bq ? bq.urgentStall : "—"}</b> 个。加急且无进度的奔强订单有 <b data-testid="bq-order-urgent-stall">${report.orderUrgentStall}</b> 单。订单逐单统计（生产编号+厂编，其次生产编号，再次厂编）：
-      推进 <b data-testid="bq-order-advance">${report.orderCounts["工序推进"] || 0}</b>，
+    <p class="help">奔强不按固定工序顺序比较，只看工序名有没有变。缺少客户料号时，按以前各天的「生产型号 → 客户料号」回填，比较用的键不变。本日回填并参与匹配的有 <b data-testid="bq-backfill-rows">${report.backfill.rows}</b> 行、<b data-testid="bq-backfill-models">${report.backfill.models}</b> 个型号<span data-testid="bq-backfill-rules">${backfillRules(report.backfill)}</span>。型号上挂到加急、并且无进度的有 <b data-testid="bq-model-urgent-stall">${bq ? bq.urgentStall : "—"}</b> 个。加急且无进度的奔强订单有 <b data-testid="bq-order-urgent-stall">${report.orderUrgentStall}</b> 单。订单逐单统计（生产编号+厂编，其次生产编号，再次厂编）：
+      有变化 <b data-testid="bq-order-change">${report.orderCounts["有变化"] || 0}</b>，
       无进度 <b data-testid="bq-order-stall">${report.orderCounts["无进度"] || 0}</b>，
-      回退 <b data-testid="bq-order-back">${report.orderCounts["工序回退"] || 0}</b>，
-      顺序未知 <b data-testid="bq-order-unknown">${report.orderCounts["工序变化(顺序未知)"] || 0}</b>，
       已出 <b data-testid="bq-order-out">${report.orderCounts["已出WIP"] || 0}</b>，
       新增 <b data-testid="bq-order-new">${report.orderCounts["今日新增"] || 0}</b>，
       未在WIP <b data-testid="bq-order-miss">${report.orderCounts["未在WIP"] || 0}</b>，

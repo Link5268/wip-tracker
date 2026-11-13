@@ -6,6 +6,7 @@ const HEADER = {
   alignment: { horizontal: "center", vertical: "middle", wrapText: true },
 };
 const TYPE_STYLE = {
+  有变化: ["FFC6EFCE", "FF006100", false],
   工序推进: ["FFC6EFCE", "FF006100", false],
   无进度: ["FFFFC000", "FF9C0006", true],
   工序回退: ["FFFECACA", "FF9F1239", true],
@@ -133,14 +134,12 @@ async function benqiangCompare(records, date) {
   const head = summary.addRow(["变化类型", "y099", "Y100", "合计", "其中加急", "说明"]);
   paintHeader(head);
   const notes = {
-    工序推进: "今日顺序号比上一日大",
-    无进度: "两天最远顺序号相同",
-    工序回退: "今日顺序号比上一日小",
-    "工序变化(顺序未知)": "有工序不在顺序表里，无法比较",
+    有变化: "工序名和上一日不一样",
+    无进度: "工序名和上一日相同",
     已出WIP: "昨日有、今日没有（多为完工入库/出货）",
     今日新增: "今日新出现（多为新单）",
   };
-  const summaryTypes = ["工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增"];
+  const summaryTypes = ["有变化", "无进度", "已出WIP", "今日新增"];
   for (const type of summaryTypes) {
     const row = summary.addRow([
       type,

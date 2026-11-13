@@ -1,4 +1,4 @@
-import { buildReport, classifyPresence, dateDiff, joinSteps } from "./logic.js";
+import { buildReport, classifyPresence, compareByName, dateDiff, joinSteps } from "./logic.js";
 import { indexEntities, matchOrder, normKey } from "./lenient.js";
 import { catalogsFrom, compareBySequence, sequenceLabel } from "./processOrder.js";
 
@@ -8,6 +8,7 @@ const HEADER = {
   alignment: { horizontal: "center", vertical: "middle", wrapText: true },
 };
 const TYPE_STYLE = {
+  有变化: ["FFC6EFCE", "FF006100", false],
   工序推进: ["FFC6EFCE", "FF006100", false],
   无进度: ["FFFFC000", "FF9C0006", true],
   工序回退: ["FFFECACA", "FF9F1239", true],
@@ -17,7 +18,7 @@ const TYPE_STYLE = {
   未在WIP: ["FFF2F2F2", "FF808080", false],
 };
 
-const SUMMARY_TYPES = ["工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增"];
+const SUMMARY_TYPES = ["有变化", "工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增"];
 
 function datesOf(records, supplier) {
   return [...new Set(records.filter((record) => record.supplier === supplier && record.kind === "wip" && record.date).map((record) => record.date))].sort();
@@ -116,7 +117,7 @@ function present(steps) {
   return Array.isArray(steps);
 }
 
-function verdict(dates, stepsByDate, catalog) {
+function verdict(dates, stepsByDate, catalog, supplier) {
   if (!dates.length) return "未在WIP";
   const current = dates[dates.length - 1];
   const previous = dates.length > 1 ? dates[dates.length - 2] : null;
@@ -125,6 +126,7 @@ function verdict(dates, stepsByDate, catalog) {
   if (!onCurrent && !onPrevious) {
     return dates.slice(0, -1).some((day) => present(stepsByDate[day])) ? "已出WIP" : "未在WIP";
   }
+  if (supplier === "奔强") return compareByName(previous ? stepsByDate[previous] : null, stepsByDate[current], onPrevious, onCurrent);
   return compareBySequence(previous ? stepsByDate[previous] : null, stepsByDate[current], onPrevious, onCurrent, catalog);
 }
 
@@ -140,7 +142,8 @@ function setVerdict(dates, stepsByDate) {
   return classifyPresence(previous ? stepsByDate[previous] : null, stepsByDate[current], onPrevious, onCurrent);
 }
 
-function todaySeq(dates, stepsByDate, catalog) {
+function todaySeq(dates, stepsByDate, catalog, supplier) {
+  if (supplier === "奔强") return "";
   const current = dates[dates.length - 1];
   if (!current || !present(stepsByDate[current])) return "";
   return sequenceLabel(stepsByDate[current], catalog);
@@ -251,9 +254,9 @@ export function buildCombinedTables(records, date, catalogOverrides) {
       part: entity.customer === "奔强" ? entity.pn : entity.productNo,
       model: entity.cm,
       days: cells,
-      type: verdict(dates, entity.stepsByDate, catalogs[entity.customer]),
+      type: verdict(dates, entity.stepsByDate, catalogs[entity.customer], entity.customer),
       setType: setVerdict(dates, entity.stepsByDate),
-      seqLabel: todaySeq(dates, entity.stepsByDate, catalogs[entity.customer]),
+      seqLabel: todaySeq(dates, entity.stepsByDate, catalogs[entity.customer], entity.customer),
       prevSteps: dates.length > 1 ? entity.stepsByDate[dates[dates.length - 2]] : null,
       currSteps: entity.stepsByDate[dates[dates.length - 1]] || null,
     };
@@ -272,7 +275,7 @@ export function buildCombinedTables(records, date, catalogOverrides) {
       const dates = trail.dates;
       const stepsByDate = trail.stepsByDate;
       const catalog = catalogs[supplier];
-      const type = found.matched ? verdict(dates, stepsByDate, catalog) : "未在WIP";
+      const type = found.matched ? verdict(dates, stepsByDate, catalog, supplier) : "未在WIP";
       const sources = [...new Set(found.entities.map((entity) => entity.source).filter(Boolean))];
       orders.push({
         customer: supplier,
@@ -290,7 +293,7 @@ export function buildCombinedTables(records, date, catalogOverrides) {
         many: found.many,
         type,
         setType: found.matched ? setVerdict(dates, stepsByDate) : "未在WIP",
-        seqLabel: found.matched ? todaySeq(dates, stepsByDate, catalog) : "",
+        seqLabel: found.matched ? todaySeq(dates, stepsByDate, catalog, supplier) : "",
         wipQty: [...new Set(found.entities.map((entity) => entity.qty).filter(Boolean))].join(" / "),
         days: [0, 1, 2].map((index) => {
           const day = dates[index];
@@ -298,7 +301,7 @@ export function buildCombinedTables(records, date, catalogOverrides) {
           return {
             date: day || "",
             text: steps ? stepText(steps) : "",
-            seq: steps ? sequenceLabel(steps, catalog) : "",
+            seq: supplier === "奔强" || !steps ? "" : sequenceLabel(steps, catalog),
           };
         }),
       });
@@ -434,7 +437,7 @@ function writeSummary(ws, tables) {
     ]);
   }
   ws.addRow([]);
-  ws.addRow([`各来源用自己最近的有文件的日期做当天。y099 ${tables.windows.y099.join("、") || "无"}；Y100 ${tables.windows.Y100.join("、") || "无"}；捷德 ${tables.windows.捷德310.join("、") || "无"}。进度按工序顺序号比较。工程暂定第 0 道，仓库暂定第 999 道（视为完工），外发和 PCBA 顺序未知，等 Jay 确认。`]);
+  ws.addRow([`各来源用自己最近的有文件的日期做当天。y099 ${tables.windows.y099.join("、") || "无"}；Y100 ${tables.windows.Y100.join("、") || "无"}；捷德 ${tables.windows.捷德310.join("、") || "无"}。奔强只看工序名有没有变化。捷德按 60 道顺序号比较。`]);
   widths(ws, [12, 12, 12, 12, 14, 18, 12, 12, 12]);
   ws.views = [{ state: "frozen", ySplit: 1, topLeftCell: "A2" }];
 }

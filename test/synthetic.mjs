@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { classifyPresence, sameStepSet, triStatus, triRisk, jiedeMatch, dateDiff, buildReport, compareFocus } from "../js/logic.js";
+import { classifyPresence, compareByName, sameStepSet, triStatus, triRisk, jiedeMatch, dateDiff, buildReport, compareFocus } from "../js/logic.js";
 import { dailyStatus } from "../js/daily.js";
 import { matchOrder, indexEntities, normKey, usableKey } from "../js/lenient.js";
 import { compareBySequence, defaultCatalog, itemsFromSheetRows, normalizeOp } from "../js/processOrder.js";
@@ -72,13 +72,16 @@ const continued = buildReport([
     orders: [{ urgent: "", prodNo: "PN1", factoryCode: "OTHER", custModel: "", status: "已外发", due: "2026-11-20", outQty: "1" }],
   },
 ]);
-assert.equal(continued.benqiang.bySource.Y100["工序推进"], 1);
+assert.equal(continued.benqiang.bySource.Y100["有变化"], 1);
+assert.equal(continued.benqiang.bySource.Y100["工序推进"] || 0, 0);
+assert.equal(continued.benqiang.rows[0].seqLabel, "");
+assert.equal(continued.benqiang.rows[0].days.length, 3);
 assert.equal(continued.benqiang.bySource.Y100["今日新增"], 0);
 assert.equal(continued.benqiang.bySource.Y100["已出WIP"], 0);
 assert.equal(continued.backfill.rows, 2);
 assert.equal(continued.backfill.byRule["回填客户料号"], 2);
 assert.equal(continued.benqiang.rows[0].pn, "PN1");
-assert.equal(continued.dailyStats.some((item) => item.supplier === "奔强" && item.date === "2026-11-12" && item.counts["工序推进"] === 1), true);
+assert.equal(continued.dailyStats.some((item) => item.supplier === "奔强" && item.date === "2026-11-12" && item.counts["有变化"] === 1), true);
 assert.equal(compareFocus({ type: "无进度", dueDays: 5, prodNo: "b" }, { type: "工序推进", dueDays: -1, prodNo: "a" }) < 0, true);
 assert.equal(compareFocus({ type: "无进度", dueDays: 1, prodNo: "a" }, { type: "无进度", dueDays: 4, prodNo: "b" }) < 0, true);
 
@@ -118,6 +121,9 @@ assert.equal(compareBySequence(["内层AOI", "内层线路"], ["内层线路", "
 assert.equal(compareBySequence(["工程"], ["开料"], true, true, bq), "工序推进");
 assert.equal(compareBySequence(["终检"], ["仓库"], true, true, bq), "工序推进");
 assert.equal(compareBySequence(["外发"], ["测试"], true, true, bq), "工序变化(顺序未知)");
+assert.equal(compareByName(["层压", "开料"], ["开料", "层压"], true, true), "无进度");
+assert.equal(compareByName(["开料"], ["工程"], true, true), "有变化");
+assert.equal(compareByName(["开料"], null, true, false), "已出WIP");
 assert.equal(compareBySequence(["开料"], null, true, false, bq), "已出WIP");
 assert.equal(jd.lookup("*电测"), 57);
 assert.deepEqual(itemsFromSheetRows([["工序名称", "顺序号"], ["钻孔", 8], ["钻孔", 3], ["文字", 9]]), [
@@ -201,8 +207,8 @@ assert.equal(mixed.wipOnly.find((row) => row.wipPo === "JK-MATCH"), undefined);
 const lone = mixed.wipOnly.find((row) => row.wipSc === "LONE1");
 assert.equal(lone.trackId, "奔强|WIP|y099|LONE1|");
 assert.equal(lone.origin, "仅WIP");
-assert.equal(lone.type, "工序推进");
-assert.equal(lone.seqLabel, "第2/105道");
+assert.equal(lone.type, "有变化");
+assert.equal(lone.seqLabel, "");
 assert.equal(lone.custModel, "WIP-ONLY-MODEL");
 const jdLone = mixed.wipOnly.find((row) => row.wipPo === "JK-LONE");
 assert.equal(jdLone.trackId, "捷德|WIP|310|JK-LONE");
@@ -230,5 +236,38 @@ const kept = readBackup(buildBackup({
 }));
 assert.equal(kept.stars[0].id, "奔强|WIP|y099|LONE1|");
 assert.equal(kept.notes[0].note, "只在WIP");
+
+const three = buildReport([
+  {
+    id: "t1", supplier: "奔强", kind: "wip", subtype: "y099", date: "2026-11-01", importedAt: "1", rowCount: 1,
+    models: [{ key: "y099|A|PA", source: "y099", sc: "A", pn: "PA", pnU: "PA", scU: "A", cm: "cm", po: "", orderedAt: "", steps: ["开料"], rows: 1 }],
+  },
+  {
+    id: "t2", supplier: "奔强", kind: "wip", subtype: "y099", date: "2026-11-02", importedAt: "2", rowCount: 2,
+    models: [
+      { key: "y099|A|PA", source: "y099", sc: "A", pn: "PA", pnU: "PA", scU: "A", cm: "cm", po: "", orderedAt: "", steps: ["开料"], rows: 1 },
+      { key: "y099|C|PC", source: "y099", sc: "C", pn: "PC", pnU: "PC", scU: "C", cm: "cm", po: "", orderedAt: "", steps: ["层压", "开料"], rows: 1 },
+    ],
+  },
+  {
+    id: "t3", supplier: "奔强", kind: "wip", subtype: "y099", date: "2026-11-03", importedAt: "3", rowCount: 2,
+    models: [
+      { key: "y099|A|PA", source: "y099", sc: "A", pn: "PA", pnU: "PA", scU: "A", cm: "cm", po: "", orderedAt: "", steps: ["棕化"], rows: 1 },
+      { key: "y099|C|PC", source: "y099", sc: "C", pn: "PC", pnU: "PC", scU: "C", cm: "cm", po: "", orderedAt: "", steps: ["开料", "层压"], rows: 1 },
+    ],
+  },
+], { catalogs: { 奔强: [{ name: "开料", seq: 99 }, { name: "棕化", seq: 1 }] } });
+assert.deepEqual(three.benqiang.bySource.y099.dates, ["2026-11-01", "2026-11-02", "2026-11-03"]);
+assert.equal(three.benqiang.rows.find((row) => row.sc === "A").type, "有变化");
+assert.equal(three.benqiang.rows.find((row) => row.sc === "A").days[2].text, "棕化");
+assert.equal(three.benqiang.rows.find((row) => row.sc === "C").type, "无进度");
+assert.equal(three.benqiang.rows.find((row) => row.sc === "A").seqLabel, "");
+const oldList = readBackup({
+  app: "hx-wip-tracker",
+  files: [],
+  processOrders: [{ supplier: "奔强", items: [{ name: "开料", seq: 2 }] }],
+});
+assert.equal(oldList.processOrders[0].supplier, "奔强");
+assert.equal(oldList.processOrders[0].items[0].seq, 2);
 
 console.log("synthetic ok");
