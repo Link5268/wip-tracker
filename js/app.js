@@ -387,6 +387,15 @@ function viewDays(report) {
   </div>`;
 }
 
+function dayHeaders(report) {
+  const yDates = (report.benqiang && report.benqiang.bySource.y099 && report.benqiang.bySource.y099.dates) || [];
+  const xDates = (report.benqiang && report.benqiang.bySource.Y100 && report.benqiang.bySource.Y100.dates) || [];
+  if (yDates.length && xDates.join() === yDates.join()) return yDates;
+  if (yDates.length && !xDates.length) return yDates;
+  if (xDates.length && !yDates.length) return xDates;
+  return ["第1天工序", "第2天工序", "第3天工序"];
+}
+
 function viewModels(report) {
   const modelRows = filteredModels(report).map((row) => `<tr class="${STATUS_CLASS[row.type] || ""}">
       <td>${tag(row.type)}</td>
@@ -417,8 +426,8 @@ function viewModels(report) {
     ${filters("搜索生产型号、客户料号、投产单号")}
     <section class="card">
       <h2>奔强型号明细</h2>
-      <p class="help">按「来源 + 生产型号 + 客户料号」汇总，y099 和 Y100 各自看自己最近最多三天。工序名和上一天相同是无进度，不同是有变化。不显示顺序号。</p>
-      <div class="table-wrap">${table(["变化", "加急", "来源", "生产型号", "客户料号", "客户型号", "第1天工序", "第2天工序", "第3天工序", "上行数", "当日行数", "订单生产编号", "外发交期"], modelRows || `<tr><td colspan="13">${report.benqiang ? "没有符合筛选的型号。" : "导入奔强 WIP 后这里列出最近三天。"}</td></tr>`)}</div>
+      <p class="help">按「来源 + 生产型号 + 客户料号」汇总。每个来源只取最近三天，四天里最早的那天不进入这张表。工序名和上一天相同是无进度，不同是有变化。不显示顺序号。</p>
+      <div class="table-wrap">${table(["变化", "加急", "来源", "生产型号", "客户料号", "客户型号", ...dayHeaders(report), "上行数", "当日行数", "订单生产编号", "外发交期"], modelRows || `<tr><td colspan="13">${report.benqiang ? "没有符合筛选的型号。" : "导入奔强 WIP 后这里列出最近三天。"}</td></tr>`)}</div>
     </section>
     <section class="card">
       <h2>捷德投产单（最近三天）</h2>
@@ -764,7 +773,7 @@ function summaryCards(report) {
   const match = report.jdMatch ? report.jdMatch.counts : null;
   return `<section class="card stack" id="summary">
     <h2>奔强型号三日对比</h2>
-    <p class="help">${bq ? `y099 ${(src("y099") && src("y099").dates || []).join("、") || "—"}，Y100 ${(src("Y100") && src("Y100").dates || []).join("、") || "—"}。最近两天 <span data-testid="bq-prev-date">${esc((src("y099") && src("y099").prev) || "")}</span>→<span data-testid="bq-curr-date">${esc((src("y099") && src("y099").curr) || "")}</span>。行数 y099 <span data-testid="bq-rows-y099">${bq.prevRows.y099 || 0}→${bq.currRows.y099 || 0}</span>，Y100 <span data-testid="bq-rows-y100">${bq.prevRows.Y100 || 0}→${bq.currRows.Y100 || 0}</span>。工序名变了是有变化，相同是无进度。` : "导入奔强 WIP 后，这里按 y099 / Y100 各自最近最多三天比较工序名。"}</p>
+    <p class="help">${bq ? `每个来源取自己最近最多三天，不是只比最后两份文件。y099 <span data-testid="bq-prev-date">${esc((src("y099") && (src("y099").dates || []).join("、")) || "")}</span>，Y100 <span data-testid="bq-curr-date">${esc((src("Y100") && (src("Y100").dates || []).join("、")) || "")}</span>。行数 y099 <span data-testid="bq-rows-y099">${(src("y099") && src("y099").dayRows || []).map((day) => day.rows).join("→") || "—"}</span>，Y100 <span data-testid="bq-rows-y100">${(src("Y100") && src("Y100").dayRows || []).map((day) => day.rows).join("→") || "—"}</span>。结论比较这三天里的最后两天：工序名变了是有变化，相同是无进度。` : "导入奔强 WIP 后，这里按 y099 / Y100 各自最近最多三天比较工序名。"}</p>
     <div class="table-wrap"><table>
       <thead><tr><th>变化</th><th>y099</th><th>Y100</th><th>合计</th></tr></thead>
       <tbody>

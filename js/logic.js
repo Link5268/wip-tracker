@@ -91,6 +91,13 @@ function bump(counts, type) {
   counts.total += 1;
 }
 
+export function canonicalSubtype(value) {
+  const text = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (text === "Y100") return "Y100";
+  if (text === "Y099") return "y099";
+  return String(value || "").trim();
+}
+
 function byImported(files) {
   return [...files].sort((a, b) => String(a.importedAt).localeCompare(String(b.importedAt)));
 }
@@ -98,7 +105,8 @@ function byImported(files) {
 function pickLatest(files) {
   const best = new Map();
   for (const file of byImported(files)) {
-    const key = `${file.supplier}|${file.kind}|${file.subtype || ""}`;
+    const subtype = file.supplier === "奔强" ? canonicalSubtype(file.subtype) : (file.subtype || "");
+    const key = `${file.supplier}|${file.kind}|${subtype}`;
     best.set(key, file);
   }
   return [...best.values()];
@@ -124,9 +132,13 @@ function mergeBenqiang(files) {
   const rowBySource = { y099: 0, Y100: 0 };
   for (const file of ordered) {
     rows += file.rowCount || 0;
-    if (file.subtype) rowBySource[file.subtype] = file.rowCount || 0;
+    const source = canonicalSubtype(file.subtype);
+    if (source === "y099" || source === "Y100") rowBySource[source] = file.rowCount || 0;
     for (const model of file.models || []) {
-      if (!models.has(model.key)) models.set(model.key, model);
+      const normalized = { ...model, source: canonicalSubtype(model.source) || source };
+      const key = `${normalized.source}|${normalized.scU || ""}|${normalized.pnU || ""}`;
+      normalized.key = key;
+      if (!models.has(key)) models.set(key, normalized);
     }
   }
   return { models, rows, rowBySource };
@@ -421,7 +433,7 @@ function alignBenqiangKeys(days) {
   for (const day of days) {
     const next = new Map();
     for (const original of day.models.values()) {
-      const model = { ...original, steps: [...(original.steps || [])] };
+      const model = { ...original, steps: [...(original.steps || [])], source: canonicalSubtype(original.source) };
       const scKey = `${model.source}|${model.scU}`;
       if (!model.pnU && known.has(scKey)) {
         const prior = known.get(scKey);
@@ -531,6 +543,7 @@ function compareBenqiangSources(days, orders) {
       prev: prev ? prev.date : "",
       curr: curr.date,
       dates,
+      dayRows: window.map((day) => ({ date: day.date, rows: day.rowBySource[source] || 0 })),
       prevRows: prev ? prev.rowBySource[source] || 0 : 0,
       currRows: curr.rowBySource[source] || 0,
       counts,
@@ -551,6 +564,7 @@ function compareBenqiangSources(days, orders) {
       prev: part.prev,
       curr: part.curr,
       dates: part.dates,
+      dayRows: part.dayRows,
       prevRows: part.prevRows,
       currRows: part.currRows,
     };
