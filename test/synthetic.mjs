@@ -5,6 +5,7 @@ import { matchOrder, indexEntities, normKey, usableKey } from "../js/lenient.js"
 import { compareBySequence, defaultCatalog, itemsFromSheetRows, normalizeOp } from "../js/processOrder.js";
 import { parseBatch, searchOrders } from "../js/orderSearch.js";
 import { buildBackup, readBackup } from "../js/backup.js";
+import { buildCombinedTables } from "../js/oneReport.js";
 
 assert.equal(sameStepSet(["钻孔", "电镀"], ["电镀", "钻孔"]), true);
 assert.equal(classifyPresence(["钻孔"], ["电镀", "钻孔"], true, true), "工序推进");
@@ -269,5 +270,77 @@ const oldList = readBackup({
 });
 assert.equal(oldList.processOrders[0].supplier, "奔强");
 assert.equal(oldList.processOrders[0].items[0].seq, 2);
+
+function dayFile(date, subtype, sc, pn, steps, importedAt) {
+  const source = String(subtype).toUpperCase() === "Y100" ? "Y100" : "y099";
+  return {
+    id: `${subtype}|${date}|${importedAt}`,
+    supplier: "奔强",
+    kind: "wip",
+    subtype,
+    date,
+    importedAt,
+    rowCount: 10 + importedAt,
+    models: [{
+      key: `${subtype}|${sc}|${pn}`,
+      source: subtype,
+      sc,
+      pn,
+      pnU: pn,
+      scU: sc,
+      cm: "CM",
+      po: "",
+      orderedAt: "",
+      steps,
+      rows: 1,
+    }],
+  };
+}
+const four = buildReport([
+  dayFile("2026-11-10", "Y099", "SC-A", "PN-A", ["开料"], "1"),
+  dayFile("2026-11-11", "y099", "SC-A", "PN-A", ["开料"], "2"),
+  dayFile("2026-11-12", "Y099", "SC-A", "PN-A", ["开料"], "3"),
+  dayFile("2026-11-13", "y099", "SC-A", "PN-A", ["棕化"], "4"),
+  dayFile("2026-11-10", "y100", "SC-B", "PN-B", ["内层线路"], "5"),
+  dayFile("2026-11-11", "Y100", "SC-B", "PN-B", ["内层线路"], "6"),
+  dayFile("2026-11-12", "y100", "SC-B", "PN-B", ["内层线路"], "7"),
+  dayFile("2026-11-13", "Y100", "SC-B", "PN-B", ["内层线路"], "8"),
+  {
+    id: "ord-a", supplier: "奔强", kind: "order", subtype: "", date: "2026-11-13", importedAt: "9",
+    orders: [{ urgent: "", prodNo: "PN-A", factoryCode: "SC-A", custModel: "CM", status: "已外发", due: "2026-11-20", outQty: "1" }],
+  },
+  ...["2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"].map((date, index) => ({
+    id: `jd-${date}`, supplier: "捷德", kind: "wip", subtype: "310", date, importedAt: `j${index}`,
+    tickets: [{ po: "JK1", model: "JD", modelKey: "JD", qty: "1", steps: ["开料"], far: 1, near: 1, nproc: 1, display: "开料 1", sig: "a" }],
+    batches: [{ po: "JK1", model: "JD", modelKey: "JD", modelKeyU: "JD", qty: "1", display: "开料 1", steps: ["开料"] }],
+  })),
+]);
+assert.deepEqual(four.benqiang.bySource.y099.dates, ["2026-11-11", "2026-11-12", "2026-11-13"]);
+assert.deepEqual(four.benqiang.bySource.Y100.dates, ["2026-11-11", "2026-11-12", "2026-11-13"]);
+const changed = four.benqiang.rows.find((row) => row.sc === "SC-A");
+assert.equal(changed.type, "有变化");
+assert.deepEqual(changed.days.map((day) => day.date), ["2026-11-11", "2026-11-12", "2026-11-13"]);
+assert.equal(changed.days[0].text, "开料");
+assert.equal(changed.days[2].text, "棕化");
+assert.equal(four.benqiang.rows.find((row) => row.sc === "SC-B").type, "无进度");
+assert.equal(four.benqiang.rows.some((row) => row.days[0].date === "2026-11-10"), false);
+assert.deepEqual(four.orderRows.find((row) => row.prodNo === "PN-A").supplierDates, ["2026-11-11", "2026-11-12", "2026-11-13"]);
+assert.deepEqual(four.jiede.dates, ["2026-11-11", "2026-11-12", "2026-11-13"]);
+const tables = buildCombinedTables([
+  dayFile("2026-11-10", "Y099", "SC-A", "PN-A", ["开料"], "1"),
+  dayFile("2026-11-11", "y099", "SC-A", "PN-A", ["开料"], "2"),
+  dayFile("2026-11-12", "Y099", "SC-A", "PN-A", ["开料"], "3"),
+  dayFile("2026-11-13", "y099", "SC-A", "PN-A", ["棕化"], "4"),
+  dayFile("2026-11-10", "y100", "SC-B", "PN-B", ["内层线路"], "5"),
+  dayFile("2026-11-11", "Y100", "SC-B", "PN-B", ["内层线路"], "6"),
+  dayFile("2026-11-12", "y100", "SC-B", "PN-B", ["内层线路"], "7"),
+  dayFile("2026-11-13", "Y100", "SC-B", "PN-B", ["内层线路"], "8"),
+], "2026-11-13");
+assert.deepEqual(tables.windows.y099, ["2026-11-11", "2026-11-12", "2026-11-13"]);
+assert.deepEqual(tables.windows.Y100, ["2026-11-11", "2026-11-12", "2026-11-13"]);
+assert.equal(tables.progress.find((row) => row.source === "y099").type, "有变化");
+assert.equal(tables.progress.find((row) => row.source === "y099").days[2].text, "棕化");
+assert.equal(tables.progress.find((row) => row.source === "Y100").type, "无进度");
+assert.deepEqual(tables.windows.捷德310, []);
 
 console.log("synthetic ok");

@@ -1,4 +1,4 @@
-import { buildReport, classifyPresence, compareByName, dateDiff, joinSteps } from "./logic.js";
+import { buildReport, canonicalSubtype, classifyPresence, compareByName, dateDiff, joinSteps } from "./logic.js";
 import { indexEntities, matchOrder, normKey } from "./lenient.js";
 import { catalogsFrom, compareBySequence, sequenceLabel } from "./processOrder.js";
 
@@ -24,10 +24,14 @@ function datesOf(records, supplier) {
   return [...new Set(records.filter((record) => record.supplier === supplier && record.kind === "wip" && record.date).map((record) => record.date))].sort();
 }
 
+function sourceKey(record) {
+  return record.supplier === "奔强" ? canonicalSubtype(record.subtype) : (record.subtype || record.supplier);
+}
+
 function latestFiles(records, supplier, date) {
   const picked = new Map();
   records.filter((record) => record.supplier === supplier && record.kind === "wip" && record.date === date).forEach((record) => {
-    const key = record.subtype || supplier;
+    const key = sourceKey(record);
     const prev = picked.get(key);
     if (!prev || String(prev.importedAt) < String(record.importedAt)) picked.set(key, record);
   });
@@ -35,7 +39,8 @@ function latestFiles(records, supplier, date) {
 }
 
 function sourceDates(records, supplier, subtype, date) {
-  return [...new Set(records.filter((record) => record.supplier === supplier && record.kind === "wip" && record.subtype === subtype && record.date && record.date <= date).map((record) => record.date))].sort();
+  const wanted = supplier === "奔强" ? canonicalSubtype(subtype) : subtype;
+  return [...new Set(records.filter((record) => record.supplier === supplier && record.kind === "wip" && sourceKey(record) === wanted && record.date && record.date <= date).map((record) => record.date))].sort();
 }
 
 function sourceWindow(records, supplier, subtype, date) {
@@ -43,18 +48,21 @@ function sourceWindow(records, supplier, subtype, date) {
   const known = new Map();
   const days = [];
   for (const day of dates) {
-    const file = latestFiles(records, supplier, day).find((item) => item.subtype === subtype);
+    const wanted = supplier === "奔强" ? canonicalSubtype(subtype) : subtype;
+    const file = latestFiles(records, supplier, day).find((item) => sourceKey(item) === wanted);
     const models = new Map();
     for (const original of (file && file.models) || []) {
       const model = { ...original, steps: [...(original.steps || [])], source: subtype };
+      model.scU = model.scU || String(model.sc || "").toUpperCase();
+      model.pnU = normKey(model.pn) ? (model.pnU || String(model.pn).toUpperCase()) : "";
       const scKey = `${subtype}|${normKey(model.sc)}`;
-      if (!normKey(model.pn) && known.has(scKey)) {
+      if (!model.pnU && known.has(scKey)) {
         const prior = known.get(scKey);
         model.pn = prior.pn;
         model.pnU = prior.pnU;
         model.pnFrom = "history";
-        model.key = `${subtype}|${model.scU}|${model.pnU}`;
       }
+      model.key = `${subtype}|${model.scU}|${model.pnU || ""}`;
       const existing = models.get(model.key);
       if (!existing) models.set(model.key, model);
       else {
@@ -328,7 +336,8 @@ export function buildCombinedTables(records, date, catalogOverrides) {
 function fileOnLatest(records, supplier, subtype, date) {
   const latest = sourceDates(records, supplier, subtype, date).pop();
   if (!latest) return null;
-  const file = latestFiles(records, supplier, latest).find((item) => item.subtype === subtype);
+  const wanted = supplier === "奔强" ? canonicalSubtype(subtype) : subtype;
+  const file = latestFiles(records, supplier, latest).find((item) => sourceKey(item) === wanted);
   return file ? { ...file, date: latest } : null;
 }
 
