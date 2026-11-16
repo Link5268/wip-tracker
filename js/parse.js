@@ -308,13 +308,14 @@ function parseOrders(rows) {
   const header = (rows[headerIndex] || []).map(clean);
   const col = (name) => header.indexOf(name);
   const groups = new Map();
+  const allOrders = [];
   for (let index = headerIndex + 1; index < rows.length; index += 1) {
     const row = rows[index] || [];
     const prodNo = clean(cellAt(row, col("生产编号")));
     if (!prodNo || prodNo === "生产编号") continue;
     const supplier = supplierOf(cellAt(row, col("供应商"))) || "未识别";
     if (!groups.has(supplier)) groups.set(supplier, []);
-    groups.get(supplier).push({
+    const order = {
       urgent: clean(cellAt(row, col("加急"))),
       prodNo,
       customer: clean(cellAt(row, col("客户"))),
@@ -340,9 +341,12 @@ function parseOrders(rows) {
       stockIn: clean(cellText(cellAt(row, col("已入库")))),
       stockOut: clean(cellText(cellAt(row, col("已出库")))),
       shortage: clean(cellText(cellAt(row, col("欠数")))),
-    });
+    };
+    groups.get(supplier).push(order);
+    allOrders.push(order);
   }
   const records = [];
+  if (allOrders.length) records.push({ supplier: "环祥", kind: "system-orders", subtype: "", rowCount: allOrders.length, orders: allOrders, models: [] });
   for (const [supplier, orders] of groups) {
     if (supplier !== "奔强" && supplier !== "捷德") continue;
     records.push({
@@ -357,6 +361,21 @@ function parseOrders(rows) {
   return records;
 }
 
+function parseExternalOrders(rows) {
+  const headerIndex = findHeader(rows, ["生产型号", "生产批次", "外发供应商", "外发数量"]);
+  if (headerIndex < 0) return null;
+  const header = (rows[headerIndex] || []).map(clean);
+  const get = (row, name) => cellAt(row, header.indexOf(name));
+  const orders = [];
+  for (let i = headerIndex + 1; i < rows.length; i += 1) {
+    const row = rows[i] || [];
+    const model = clean(get(row, "生产型号"));
+    if (!model || model === "生产型号" || /^(合计|小计|总计)$/.test(model)) continue;
+    orders.push({ model, batch: clean(get(row, "生产批次")), supplierName: clean(get(row, "外发供应商")), outQty: clean(cellText(get(row, "外发数量"))), unit: clean(get(row, "外发单位")), recovered: clean(cellText(get(row, "已回收数量"))), shortage: clean(cellText(get(row, "欠数"))), orderDate: asDate(get(row, "下单时间")), orderDue: asDate(get(row, "下单交期")), outDate: asDate(get(row, "外发日期")), due: asDate(get(row, "预计回收时间")), note: [clean(get(row, "备注")), clean(get(row, "备注2"))].filter(Boolean).join("；") });
+  }
+  return orders.length ? { supplier: "奔强", kind: "external-orders", subtype: "", rowCount: orders.length, orders, models: [] } : null;
+}
+
 export function parseWorkbook(buffer, filename) {
   const XLSX = globalThis.XLSX;
   if (!XLSX) throw new Error("SheetJS 未加载");
@@ -369,6 +388,8 @@ export function parseWorkbook(buffer, filename) {
   const records = [];
   for (const sheetName of workbook.SheetNames) {
     const rows = sheetRows(XLSX, workbook.Sheets[sheetName]);
+    const external = parseExternalOrders(rows);
+    if (external) { records.push(decorate(external, filename, sheetName, detectedDate, dateSource)); continue; }
     const orders = parseOrders(rows);
     if (orders.length) {
       records.push(...orders.map((record) => decorate(record, filename, sheetName, detectedDate, dateSource)));

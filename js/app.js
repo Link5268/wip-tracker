@@ -1,3 +1,4 @@
+import { buildExternalReport } from "./externalOrders.js";
 import { buildReport, compareFocus, dueBucket, MODEL_TYPES, ORDER_TYPES } from "./logic.js";
 import { parseWorkbook } from "./parse.js";
 import { buildFocusWorkbook, buildStatsWorkbook, workbookBytes } from "./export.js";
@@ -33,6 +34,8 @@ const state = {
   seqMessage: "",
   log: [],
   busy: false,
+  externalQuery: "",
+  externalSupplier: "全部",
 };
 
 const STATUS_CLASS = {
@@ -86,6 +89,7 @@ function render() {
     : "尚未导入";
   app.innerHTML = {
     import: () => viewImport(report),
+    external: () => viewExternal(report),
     days: () => viewDays(report),
     models: () => viewModels(report),
     urgent: () => viewUrgent(report),
@@ -107,6 +111,16 @@ function render() {
 }
 
 function bind() {
+  const extQuery = document.querySelector("#external-query");
+  if (extQuery) extQuery.addEventListener("input", () => { state.externalQuery = extQuery.value; render(); });
+  const extSupplier = document.querySelector("#external-supplier");
+  if (extSupplier) extSupplier.addEventListener("change", () => { state.externalSupplier = extSupplier.value; render(); });
+  const extExport = document.querySelector("#external-export");
+  if (extExport) extExport.addEventListener("click", () => {
+    const data = buildExternalReport(state.records, buildReport(state.records, { catalogs: state.orderLists }), state.orderLists).rows.filter(r => (state.externalSupplier === "全部" || r.supplierName.includes(state.externalSupplier)) && (!state.externalQuery.trim() || [r.model,r.batch,r.supplierName,r.match,r.detail].some(v => String(v || "").toUpperCase().includes(state.externalQuery.trim().toUpperCase()))));
+    const sheet = XLSX.utils.json_to_sheet(data.map(r => ({外发供应商:r.supplierName, 生产型号:r.model, 生产批次:r.batch, 外发数量:r.outQty, 单位:r.unit, 已回收数量:r.recovered, 欠数:r.shortage, 预计回收时间:r.due, 匹配结果:r.match, 进度变化:r.change, 对应订单或当前工序:r.detail, 每日进度:r.days.map(d => `${d.date}: ${d.text}`).join("；")})));
+    const workbook = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(workbook, sheet, "奔强外发订单"); XLSX.writeFile(workbook, "奔强外发订单分析.xlsx");
+  });
   const drop = document.querySelector("#drop");
   const picker = document.querySelector("#picker");
   if (drop && picker) {
@@ -295,7 +309,7 @@ async function ingest(fileList) {
       const buffer = await file.arrayBuffer();
       const parsed = parseWorkbook(buffer, file.name);
       if (!parsed.records.length) {
-        state.log.push({ kind: "bad", text: `${file.name}：没认出是捷德/奔强的 WIP 或伯仁订单表。` });
+        state.log.push({ kind: "bad", text: `${file.name}：没认出是捷德/奔强 WIP、环祥订单或奔强外发订单表。` });
         continue;
       }
       const hash = await sha256(buffer);
@@ -303,7 +317,7 @@ async function ingest(fileList) {
         record.id = parsed.records.length > 1 ? `${hash}:${record.supplier}:${record.kind}:${record.subtype}:${record.sheetName}` : hash;
         record.importedAt = new Date().toISOString();
         await putFile(record);
-        const label = record.kind === "order"
+        const label = record.kind === "external-orders" ? `奔强外发订单 ${record.rowCount} 行` : record.kind === "system-orders" ? `环祥订单全量 ${record.rowCount} 行` : record.kind === "order"
           ? `${record.supplier}订单 ${record.rowCount} 行`
           : `${record.supplier} WIP ${record.subtype || ""} ${record.rowCount} 行`;
         const dateNote = record.date ? record.date : "日期未识别，请手改";
@@ -322,12 +336,20 @@ function sourceLabel(source) {
   return { created: "取自文件创建时间", filename: "取自文件名", fallback: "未能识别", manual: "手动修改" }[source] || source;
 }
 
+function viewExternal(report) {
+  const result = buildExternalReport(state.records, report, state.orderLists);
+  const q = state.externalQuery.trim().toUpperCase();
+  const rows = result.rows.filter(r => (state.externalSupplier === "全部" || r.supplierName.includes(state.externalSupplier)) && (!q || [r.model,r.batch,r.supplierName,r.match,r.detail].some(v => String(v || "").toUpperCase().includes(q))));
+  const body = rows.map(r => `<tr><td>${esc(r.supplierName)}</td><td>${esc(r.model)}</td><td>${esc(r.batch)}</td><td>${esc(r.outQty)} ${esc(r.unit)}</td><td>${esc(r.recovered)}</td><td>${esc(r.shortage)}</td><td>${esc(r.due)}</td><td>${esc(r.match)}</td><td>${esc(r.change || "—")}</td><td>${esc(r.detail || "—")}</td><td>${esc(r.days.map(d => `${d.date}: ${d.text}`).join("；") || "—")}</td></tr>`).join("");
+  return `<section class="card"><h2>奔强外发订单</h2><p class="help">${result.external ? `订单表：${esc(result.external.filename)}，共 ${result.rows.length} 行；当前显示 ${rows.length} 行。` : "请先在导入页拖入奔强外发订单表。"}</p><p class="help">外发环祥：以奔强生产型号对应环祥客户型号，数量相同优先；外发捷德：以生产型号对应捷德 WIP 客户型号，沿用型号和数量匹配。型号或数量一致只是候选，同型号多批次请核对，未匹配不等于已完成。预计回收时间取自奔强表。已有环祥订单请重新导入一次以建立全量索引。</p><div class="row-actions"><button type="button" id="external-export">导出当前结果 Excel</button><label class="field">外发供应商<select id="external-supplier">${["全部","环祥","捷德"].map(v => `<option ${v === state.externalSupplier ? "selected" : ""}>${v}</option>`).join("")}</select></label><label class="field">搜索型号、批次、供应商<input id="external-query" value="${esc(state.externalQuery)}"></label></div><div class="table-wrap">${table(["外发供应商","奔强生产型号","生产批次","外发数量","已回收","欠数","预计回收","匹配结果","进度变化","对应订单 / 当前工序","每日进度"], body || `<tr><td colspan="11">没有符合条件的记录。</td></tr>`)}</div></section>`;
+}
+
 function viewImport(report) {
   const rows = state.records.map((record) => `
     <tr data-supplier="${esc(record.supplier)}" data-subtype="${esc(record.subtype || "")}" data-date="${esc(record.date || "")}" data-kind="${esc(record.kind)}">
       <td>${esc(record.filename)}</td>
       <td>${esc(record.supplier)}</td>
-      <td>${record.kind === "order" ? "订单" : `WIP ${esc(record.subtype || "")}`}</td>
+      <td>${record.kind === "external-orders" ? "奔强外发订单" : record.kind === "system-orders" ? "环祥订单全量" : record.kind === "order" ? "订单" : `WIP ${esc(record.subtype || "")}`}</td>
       <td>${record.rowCount}</td>
       <td><input data-date-for="${esc(record.id)}" type="date" value="${esc(record.date || "")}" aria-label="修改 ${esc(record.filename)} 的日期"></td>
       <td>${esc(sourceLabel(record.dateSource))}</td>
@@ -336,7 +358,7 @@ function viewImport(report) {
   return `<div class="stack">
     <section class="drop" id="drop">
       <h2>把今天的原始表拖到这里</h2>
-      <p>捷德 310 WIP、奔强 y099 / Y100、伯仁订单表，.xls 和 .xlsx 都可以。同一天的 y099 和 Y100 会合成一份奔强 WIP。</p>
+      <p>捷德 310 WIP、奔强 y099 / Y100、环祥订单表、奔强外发订单表，.xls 和 .xlsx 都可以。同一天的 y099 和 Y100 会合成一份奔强 WIP。</p>
       <label class="file-btn">选择文件<input id="picker" type="file" multiple accept=".xls,.xlsx,.xlsm,.xlsb,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
     </section>
     <section class="card">

@@ -344,3 +344,21 @@ assert.equal(tables.progress.find((row) => row.source === "Y100").type, "无进�
 assert.deepEqual(tables.windows.捷德310, []);
 
 console.log("synthetic ok");
+
+// 奔强外发订单不能覆盖原有环祥订单；同型号多单只能作为待核对候选。
+const { buildExternalReport } = await import('../js/externalOrders.js');
+const ext = {kind:'external-orders', date:'2026-11-13', orders:[
+  {model:'ABC', batch:'A1', supplierName:'环祥', outQty:'10'},
+  {model:'MISSING', batch:'B1', supplierName:'环祥', outQty:'3'},
+  {model:'BOARD-A', batch:'C1', supplierName:'捷德', outQty:'10'}
+]};
+const sys = {kind:'system-orders',date:'2026-11-13',orders:[
+  {prodNo:'P1',custModel:'ABC',orderQty:'10'}, {prodNo:'P2',custModel:'ABC',orderQty:'10'}
+]};
+const extJd = {kind:'wip',supplier:'捷德',date:'2026-11-13',batches:[{modelKeyU:'BOARD-A',qty:'10',display:'开料 10',steps:['开料']}]};
+const er = buildExternalReport([ext,sys,extJd],{orderRows:[],asOf:'2026-11-13'},{});
+assert.equal(er.rows.length,3);
+assert.equal(er.rows[0].match,'同型号多单，待核对');
+assert.equal(er.rows[1].match,'未匹配环祥订单');
+assert.equal(er.rows[2].match,'型号+数量候选');
+assert.equal(buildExternalReport([ext],{orderRows:[],asOf:''},{}).rows[0].match,'缺少环祥订单表');
