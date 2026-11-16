@@ -1,4 +1,4 @@
-import { buildExternalReport } from "./externalOrders.js";
+import { threeDayStatus } from "./externalOrders.js";
 import { buildReport, compareFocus, dueBucket, MODEL_TYPES, ORDER_TYPES } from "./logic.js";
 import { parseWorkbook } from "./parse.js";
 import { buildFocusWorkbook, buildStatsWorkbook, workbookBytes } from "./export.js";
@@ -34,8 +34,6 @@ const state = {
   seqMessage: "",
   log: [],
   busy: false,
-  externalQuery: "",
-  externalSupplier: "全部",
 };
 
 const STATUS_CLASS = {
@@ -89,7 +87,6 @@ function render() {
     : "尚未导入";
   app.innerHTML = {
     import: () => viewImport(report),
-    external: () => viewExternal(report),
     days: () => viewDays(report),
     models: () => viewModels(report),
     urgent: () => viewUrgent(report),
@@ -111,16 +108,6 @@ function render() {
 }
 
 function bind() {
-  const extQuery = document.querySelector("#external-query");
-  if (extQuery) extQuery.addEventListener("input", () => { state.externalQuery = extQuery.value; render(); });
-  const extSupplier = document.querySelector("#external-supplier");
-  if (extSupplier) extSupplier.addEventListener("change", () => { state.externalSupplier = extSupplier.value; render(); });
-  const extExport = document.querySelector("#external-export");
-  if (extExport) extExport.addEventListener("click", () => {
-    const data = buildExternalReport(state.records, buildReport(state.records, { catalogs: state.orderLists }), state.orderLists).rows.filter(r => (state.externalSupplier === "全部" || r.supplierName.includes(state.externalSupplier)) && (!state.externalQuery.trim() || [r.model,r.batch,r.supplierName,r.match,r.detail].some(v => String(v || "").toUpperCase().includes(state.externalQuery.trim().toUpperCase()))));
-    const sheet = XLSX.utils.json_to_sheet(data.map(r => ({外发供应商:r.supplierName, 生产型号:r.model, 生产批次:r.batch, 外发数量:r.outQty, 单位:r.unit, 已回收数量:r.recovered, 欠数:r.shortage, 预计回收时间:r.due, 匹配结果:r.match, 进度变化:r.change, 对应订单或当前工序:r.detail, 每日进度:r.days.map(d => `${d.date}: ${d.text}`).join("；")})));
-    const workbook = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(workbook, sheet, "奔强外发订单"); XLSX.writeFile(workbook, "奔强外发订单分析.xlsx");
-  });
   const drop = document.querySelector("#drop");
   const picker = document.querySelector("#picker");
   if (drop && picker) {
@@ -336,14 +323,6 @@ function sourceLabel(source) {
   return { created: "取自文件创建时间", filename: "取自文件名", fallback: "未能识别", manual: "手动修改" }[source] || source;
 }
 
-function viewExternal(report) {
-  const result = buildExternalReport(state.records, report, state.orderLists);
-  const q = state.externalQuery.trim().toUpperCase();
-  const rows = result.rows.filter(r => (state.externalSupplier === "全部" || r.supplierName.includes(state.externalSupplier)) && (!q || [r.model,r.batch,r.supplierName,r.match,r.detail].some(v => String(v || "").toUpperCase().includes(q))));
-  const body = rows.map(r => `<tr><td>${esc(r.supplierName)}</td><td>${esc(r.model)}</td><td>${esc(r.batch)}</td><td>${esc(r.outQty)} ${esc(r.unit)}</td><td>${esc(r.recovered)}</td><td>${esc(r.shortage)}</td><td>${esc(r.due)}</td><td>${esc(r.match)}</td><td>${esc(r.change || "—")}</td><td>${esc(r.detail || "—")}</td><td>${esc(r.days.map(d => `${d.date}: ${d.text}`).join("；") || "—")}</td></tr>`).join("");
-  return `<section class="card"><h2>奔强外发订单</h2><p class="help">${result.external ? `订单表：${esc(result.external.filename)}，共 ${result.rows.length} 行；当前显示 ${rows.length} 行。` : "请先在导入页拖入奔强外发订单表。"}</p><p class="help">外发环祥：以奔强生产型号对应环祥客户型号，数量相同优先；外发捷德：以生产型号对应捷德 WIP 客户型号，沿用型号和数量匹配。型号或数量一致只是候选，同型号多批次请核对，未匹配不等于已完成。预计回收时间取自奔强表。已有环祥订单请重新导入一次以建立全量索引。</p><div class="row-actions"><button type="button" id="external-export">导出当前结果 Excel</button><label class="field">外发供应商<select id="external-supplier">${["全部","环祥","捷德"].map(v => `<option ${v === state.externalSupplier ? "selected" : ""}>${v}</option>`).join("")}</select></label><label class="field">搜索型号、批次、供应商<input id="external-query" value="${esc(state.externalQuery)}"></label></div><div class="table-wrap">${table(["外发供应商","奔强生产型号","生产批次","外发数量","已回收","欠数","预计回收","匹配结果","进度变化","对应订单 / 当前工序","每日进度"], body || `<tr><td colspan="11">没有符合条件的记录。</td></tr>`)}</div></section>`;
-}
-
 function viewImport(report) {
   const rows = state.records.map((record) => `
     <tr data-supplier="${esc(record.supplier)}" data-subtype="${esc(record.subtype || "")}" data-date="${esc(record.date || "")}" data-kind="${esc(record.kind)}">
@@ -385,24 +364,30 @@ function viewDays(report) {
       <td>${starButton(row)}</td>
       <td>${tag(row.type)}</td>
       <td>${row.urgentFlag ? `<b class="urg">${esc(row.urgent)}</b>` : ""}</td>
+      <td>${esc(row.orderSource || "环祥订单")}</td>
       <td>${esc(row.supplier)}</td>
       <td>${esc(row.prodNo)}</td>
+      <td>${esc(row.batch || "")}</td>
+      <td>${esc(row.outQty || "")}</td>
+      <td>${esc(row.recovered || "")}</td>
+      <td>${esc(row.shortage || "")}</td>
       <td>${esc(row.factoryCode)}</td>
       <td>${esc(row.custModel)}</td>
       <td>${esc(row.status)}</td>
       <td class="${row.dueDays != null && row.dueDays < 0 ? "late" : ""}">${esc(row.due)}</td>
       <td>${dueText(row.dueDays)}</td>
-      <td>${esc(row.how)}</td>
+      <td title="${esc(row.matchDetail || "")}">${esc(row.how)}</td>
+      <td>${esc(row.threeDay || threeDayStatus(row.dayCells, row.supplierDates))}</td>
       ${days}
     </tr>`;
   }).join("");
-  const head = ["关注", "较上日", "加急", "供应商", "生产编号", "厂编", "客户型号", "订单状态", "外发交期", "距交期", "匹配", ...report.windowDates];
+  const head = ["关注", "较上日", "加急", "订单来源", "供应商", "生产编号/型号", "生产批次", "外发数量", "已回收", "欠数", "厂编", "客户型号", "订单状态", "外发交期", "距交期", "匹配", "近三日变化", ...report.windowDates];
   return `<div class="stack">
     ${filters("按生产编号、厂编或客户型号搜索")}
     ${statsTable(report)}
     <section class="card">
       <h2>最近 ${report.windowDates.length || 0} 个有 WIP 的日期</h2>
-      <p class="help">每个订单一行。奔强只看工序名：和上一日相同是无进度，不同是有变化。捷德按顺序号：更大是工序推进，相同是无进度，更小是工序回退，对不上顺序表是工序变化(顺序未知)。☆ 标成「我关注的」。</p>
+      <p class="help">每个订单或外发批次一行，订单来源标明环祥订单或奔强外发。近三日记录相同只表示报表工序相同。奔强只看工序名：和上一日相同是无进度，不同是有变化。捷德按顺序号：更大是工序推进，相同是无进度，更小是工序回退，对不上顺序表是工序变化(顺序未知)。☆ 标成「我关注的」。</p>
       <div class="legend">${ORDER_TYPES.map((type) => tag(type)).join("")}</div>
     </section>
     <div class="table-wrap">${table(head, rows || `<tr><td colspan="${head.length}">没有符合筛选的订单。</td></tr>`)}</div>
@@ -537,7 +522,7 @@ function viewFocus(report) {
     <section class="card filters">
       <label class="field">客户
         <select id="focus-supplier">
-          ${["全部", "奔强", "捷德"].map((item) => `<option ${item === state.focusSupplier ? "selected" : ""}>${item}</option>`).join("")}
+          ${["全部", "环祥", "奔强", "捷德"].map((item) => `<option ${item === state.focusSupplier ? "selected" : ""}>${item}</option>`).join("")}
         </select>
       </label>
       <label class="field">范围
@@ -915,7 +900,7 @@ function filters(placeholder) {
   return `<section class="card filters">
     <label class="field">供应商
       <select id="supplier">
-        ${["全部", "奔强", "捷德"].map((item) => `<option ${item === state.supplier ? "selected" : ""}>${item}</option>`).join("")}
+        ${["全部", "环祥", "奔强", "捷德"].map((item) => `<option ${item === state.supplier ? "selected" : ""}>${item}</option>`).join("")}
       </select>
     </label>
     <label class="field">从<input id="date-from" type="date" value="${esc(state.dateFrom)}"></label>
@@ -934,7 +919,7 @@ function filters(placeholder) {
 }
 
 function filteredOrders(report) {
-  return report.orderRows.filter((row) => supplierOk(row.supplier) && typeOk(row.type) && hitQuery(row.prodNo, row.factoryCode, row.custModel));
+  return report.orderRows.filter((row) => supplierOk(row.supplier) && typeOk(row.type) && hitQuery(row.prodNo, row.factoryCode, row.custModel, row.batch, row.orderSource));
 }
 
 function filteredModels(report) {

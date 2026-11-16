@@ -316,6 +316,18 @@ export function buildCombinedTables(records, date, catalogOverrides) {
     }
   }
 
+  // Add the external customer orders to the same order sheet, one row per batch.
+  const combinedReport = buildReport(records, { asOf: date, catalogs: catalogOverrides });
+  for (const row of combinedReport.orderRows.filter(item => item.orderSource === "奔强外发")) {
+    const dates = (row.supplierDates || []).slice(-3);
+    const days = [{date:"",text:""},{date:"",text:""},{date:"",text:""}];
+    dates.forEach((d, i) => { const cell = row.dayCells[d] || {}; days[3-dates.length+i] = {date:d, text:cell.text || "未匹配", seq:cell.seqLabel || ""}; });
+    orders.push({customer:"奔强", orderSource:row.orderSource, supplier:row.supplier, batch:row.batch, recovered:row.recovered, shortage:row.shortage,
+      urgent:"", prodNo:row.prodNo, custModel:row.custModel, qty:row.outQty, orderDate:row.orderDate, due:row.due, status:row.status,
+      factoryCode:"", basis:row.how, matchDetail:row.matchDetail, many:row.how.includes("多单"), type:row.type, threeDay:row.threeDay,
+      seqLabel:row.seqLabel, days, trackId:row.trackId});
+  }
+
   const raw = {
     捷德310: fileOnLatest(records, "捷德", "310", date),
     y099: fileOnLatest(records, "奔强", "y099", date),
@@ -507,20 +519,31 @@ function writeProgress(ws, tables) {
   widths(ws, [10, 10, 18, 16, 24, 12, 28, 12, 28, 12, 28, 18, 16]);
 }
 
+function threeDayFromCells(days) {
+  const valid = day => day && day.date && day.text && !["未匹配", "未在WIP", "—"].includes(day.text);
+  const last = (days || []).filter(day => day.date).slice(-3);
+  if (!last.some(valid)) return "未匹配";
+  if (last.length < 2 || !valid(last.at(-1)) || !valid(last.at(-2))) return "历史不足或未匹配";
+  if (last.at(-1).text !== last.at(-2).text) return "记录有变化";
+  if (last.length === 3 && valid(last[0]) && last[0].text === last[1].text) return "连续3天记录相同";
+  return "连续2天记录相同";
+}
+
 function writeOrders(ws, tables) {
-  paintHeader(ws.addRow(["客户", "加急", "生产编号", "客户型号", "数量", "下单日", "交期", "状态", "厂编", "匹配依据", "一对多", "进度", "今日工序顺序", "第1天", "第1天工序", "第2天", "第2天工序", "第3天", "第3天工序"]));
+  paintHeader(ws.addRow(["客户", "加急", "生产编号", "客户型号", "数量", "下单日", "交期", "状态", "厂编", "匹配依据", "一对多", "进度", "今日工序顺序", "第1天", "第1天工序", "第2天", "第2天工序", "第3天", "第3天工序", "订单来源", "外发供应商", "生产批次", "已回收", "欠数", "近三日变化", "对应订单及工序"]));
   for (const row of tables.orders) {
     const added = ws.addRow([
       row.customer, row.urgent, row.prodNo, row.custModel, row.qty, row.orderDate, row.due, row.status, row.factoryCode,
       row.basis, row.many ? "一对多" : "", row.type, row.seqLabel || "",
       row.days[0].date, row.days[0].text, row.days[1].date, row.days[1].text, row.days[2].date, row.days[2].text,
+      row.orderSource || "环祥订单", row.supplier || row.customer, row.batch || "", row.recovered || "", row.shortage || "", row.threeDay || threeDayFromCells(row.days), row.matchDetail || "",
     ]);
     paintType(added.getCell(12), row.type);
     if (row.urgent) added.getCell(2).font = { bold: true, color: { argb: "FFC00000" } };
     if (row.many) added.getCell(11).font = { bold: true, color: { argb: "FF9C5700" } };
   }
   freeze(ws);
-  widths(ws, [10, 10, 16, 24, 10, 12, 12, 10, 16, 22, 10, 18, 16, 12, 28, 12, 28, 12, 28]);
+  widths(ws, [10, 10, 16, 24, 10, 12, 12, 10, 16, 22, 10, 18, 16, 12, 28, 12, 28, 12, 28, 14, 14, 18, 12, 12, 20, 36]);
 }
 
 function starred(stars, id) {

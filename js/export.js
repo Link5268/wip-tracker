@@ -1,3 +1,4 @@
+import { threeDayStatus } from "./externalOrders.js";
 import { ORDER_TYPES, dueBucket } from "./logic.js";
 
 function textWidth(value) {
@@ -33,20 +34,27 @@ function orderLine(row, dates) {
   return [
     row.type,
     row.urgent || "",
+    row.orderSource || "环祥订单",
     row.supplier,
     row.prodNo,
+    row.batch || "",
+    row.outQty || "",
+    row.recovered || "",
+    row.shortage || "",
     row.factoryCode,
     row.custModel,
     row.status,
     row.due,
     dueLabel(row.dueDays),
     row.how,
+    row.matchDetail || "",
+    row.threeDay || threeDayStatus(row.dayCells, row.supplierDates),
     row.stallDays,
     ...dates.map((date) => (row.dayCells[date] && row.dayCells[date].text) || "—"),
   ];
 }
 
-const ORDER_HEAD = ["较上日", "加急", "供应商", "生产编号", "厂编", "客户型号", "订单状态", "外发交期", "距交期", "匹配", "连续无进度天数"];
+const ORDER_HEAD = ["较上日", "加急", "订单来源", "供应商", "生产编号/型号", "生产批次", "外发数量", "已回收", "欠数", "厂编", "客户型号", "订单状态", "外发交期", "距交期", "匹配", "对应订单及工序", "近三日变化", "连续无进度天数"];
 
 export function buildStatsWorkbook(report, { supplier = "全部", withinDays = 3 } = {}) {
   const XLSX = globalThis.XLSX;
