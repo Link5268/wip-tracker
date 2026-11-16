@@ -855,7 +855,7 @@ function dailyPanel(report) {
   ];
   return `<section class="card stack">
     <h2>生成日报 Excel</h2>
-    <p class="help">导入最多连续三天的原始表后，点下面的按钮下载一份工作簿：今日原始 WIP、捷德和奔强合在一张表里的进度对比、以及合并后的订单匹配。文件在本机生成，不会上传。</p>
+    <p class="help">导入环祥订单、奔强外发订单及最多三天的 WIP 后，下载的工作簿中「订单WIP进度」会将两份订单放在同一张表，每条订单显示三天工序和进度。日期用于选择 WIP 截止日，奔强订单取最新导入版本。文件在本机生成，不会上传。</p>
     <div class="filters">
       <label class="field">日期<input id="daily-date" type="date" value="${esc(date)}"></label>
       <button type="button" id="daily-one" ${date ? "" : "disabled"}>生成日报 Excel</button>

@@ -316,16 +316,46 @@ export function buildCombinedTables(records, date, catalogOverrides) {
     }
   }
 
-  // Add the external customer orders to the same order sheet, one row per batch.
-  const combinedReport = buildReport(records, { asOf: date, catalogs: catalogOverrides });
-  for (const row of combinedReport.orderRows.filter(item => item.orderSource === "奔强外发")) {
-    const dates = (row.supplierDates || []).slice(-3);
-    const days = [{date:"",text:""},{date:"",text:""},{date:"",text:""}];
-    dates.forEach((d, i) => { const cell = row.dayCells[d] || {}; days[3-dates.length+i] = {date:d, text:cell.text || "未匹配", seq:cell.seqLabel || ""}; });
-    orders.push({customer:"奔强", orderSource:row.orderSource, supplier:row.supplier, batch:row.batch, recovered:row.recovered, shortage:row.shortage,
-      urgent:"", prodNo:row.prodNo, custModel:row.custModel, qty:row.outQty, orderDate:row.orderDate, due:row.due, status:row.status,
-      factoryCode:"", basis:row.how, matchDetail:row.matchDetail, many:row.how.includes("多单"), type:row.type, threeDay:row.threeDay,
-      seqLabel:row.seqLabel, days, trackId:row.trackId});
+  // External orders are the current order book. The selected report date limits WIP snapshots,
+  // not the order-file creation date (an order file can be newer than historical WIP).
+  const latestBook = (kind) => records.filter(record => record.kind === kind)
+    .sort((a,b) => String(a.date || '').localeCompare(String(b.date || '')) || String(a.importedAt || '').localeCompare(String(b.importedAt || ''))).at(-1);
+  const externalBook = latestBook('external-orders');
+  const systemBook = latestBook('system-orders');
+  const modelKey = value => String(value || '').normalize('NFKC').trim().replace(/\s+/g,'').split('(')[0].toUpperCase();
+  for (const order of externalBook?.orders || []) {
+    let found = { entities: [], basis: '未在WIP', many: false, matched: false };
+    let supplier = '';
+    if (String(order.supplierName || '').includes('捷德')) {
+      supplier = '捷德';
+      found = matchOrder({custModel:order.model, outQty:order.outQty}, indexEntities(entities.filter(entity => entity.customer === supplier)));
+    } else if (String(order.supplierName || '').includes('环祥')) {
+      const candidates = (systemBook?.orders || []).filter(row => modelKey(row.custModel) && modelKey(row.custModel) === modelKey(order.model));
+      const exact = candidates.filter(row => String(row.orderQty || row.outQty || '') === String(order.outQty || ''));
+      const selected = exact.length ? exact : candidates;
+      if (selected.length === 1) {
+        const internal = selected[0];
+        supplier = ['奔强','捷德'].find(name => String(internal.supplierName || '').includes(name)) || '';
+        if (supplier) {
+          found = matchOrder(internal, indexEntities(entities.filter(entity => entity.customer === supplier)));
+          found.basis = found.matched ? `环祥订单候选 ${internal.prodNo}；${found.basis}` : `环祥订单候选 ${internal.prodNo}；未匹配WIP`;
+        } else found.basis = `环祥订单候选 ${internal.prodNo}；缺少对应供应商WIP`;
+      } else if (selected.length > 1) {
+        found.basis = '环祥同型号多单，待核对'; found.many = true;
+      } else found.basis = systemBook ? '未匹配环祥订单' : '缺少环祥订单表';
+    } else found.basis = '缺少对应供应商WIP';
+    const trail = orderTrail(found.entities);
+    const dates = trail.dates.length ? trail.dates : supplier === '捷德' ? jdDateList : supplier === '奔强' ? [...new Set([...y099.dates, ...y100.dates])].sort().slice(-3) : [];
+    const steps = trail.stepsByDate;
+    const current = dates.at(-1), previous = dates.at(-2);
+    const type = !found.matched ? '未在WIP' : dates.length < 2 ? '历史不足' : verdict(dates, steps, catalogs[supplier], supplier);
+    const days = [{date:'',text:''},{date:'',text:''},{date:'',text:''}];
+    dates.slice(-3).forEach((day,i,arr) => { days[3-arr.length+i] = {date:day, text:Object.hasOwn(steps,day) ? stepText(steps[day]) : '未匹配', seq:supplier === '捷德' && Object.hasOwn(steps,day) ? sequenceLabel(steps[day],catalogs[supplier]) : ''}; });
+    orders.push({customer:'奔强', orderSource:'奔强外发', source:order.supplierName || '', urgent:'', prodNo:order.batch || '', custModel:order.model || '',
+      qty:order.outQty || '', orderDate:order.orderDate || '', due:order.due || '', status:'', factoryCode:'', po:'',
+      basis:found.basis, many:found.many, type, setType:type, seqLabel:current && Object.hasOwn(steps,current) && supplier === '捷德' ? sequenceLabel(steps[current],catalogs[supplier]) : '',
+      wipQty:[...new Set(found.entities.map(entity => entity.qty).filter(Boolean))].join(' / '), days,
+      trackId:`奔强外发|${order.supplierName}|${order.model}|${order.batch}`});
   }
 
   const raw = {
@@ -519,31 +549,20 @@ function writeProgress(ws, tables) {
   widths(ws, [10, 10, 18, 16, 24, 12, 28, 12, 28, 12, 28, 18, 16]);
 }
 
-function threeDayFromCells(days) {
-  const valid = day => day && day.date && day.text && !["未匹配", "未在WIP", "—"].includes(day.text);
-  const last = (days || []).filter(day => day.date).slice(-3);
-  if (!last.some(valid)) return "未匹配";
-  if (last.length < 2 || !valid(last.at(-1)) || !valid(last.at(-2))) return "历史不足或未匹配";
-  if (last.at(-1).text !== last.at(-2).text) return "记录有变化";
-  if (last.length === 3 && valid(last[0]) && last[0].text === last[1].text) return "连续3天记录相同";
-  return "连续2天记录相同";
-}
-
 function writeOrders(ws, tables) {
-  paintHeader(ws.addRow(["客户", "加急", "生产编号", "客户型号", "数量", "下单日", "交期", "状态", "厂编", "匹配依据", "一对多", "进度", "今日工序顺序", "第1天", "第1天工序", "第2天", "第2天工序", "第3天", "第3天工序", "订单来源", "外发供应商", "生产批次", "已回收", "欠数", "近三日变化", "对应订单及工序"]));
+  paintHeader(ws.addRow(["客户", "加急", "生产编号", "客户型号", "数量", "下单日", "交期", "状态", "厂编", "匹配依据", "一对多", "进度", "今日工序顺序", "第1天", "第1天工序", "第2天", "第2天工序", "第3天", "第3天工序"]));
   for (const row of tables.orders) {
     const added = ws.addRow([
       row.customer, row.urgent, row.prodNo, row.custModel, row.qty, row.orderDate, row.due, row.status, row.factoryCode,
       row.basis, row.many ? "一对多" : "", row.type, row.seqLabel || "",
       row.days[0].date, row.days[0].text, row.days[1].date, row.days[1].text, row.days[2].date, row.days[2].text,
-      row.orderSource || "环祥订单", row.supplier || row.customer, row.batch || "", row.recovered || "", row.shortage || "", row.threeDay || threeDayFromCells(row.days), row.matchDetail || "",
     ]);
     paintType(added.getCell(12), row.type);
     if (row.urgent) added.getCell(2).font = { bold: true, color: { argb: "FFC00000" } };
     if (row.many) added.getCell(11).font = { bold: true, color: { argb: "FF9C5700" } };
   }
   freeze(ws);
-  widths(ws, [10, 10, 16, 24, 10, 12, 12, 10, 16, 22, 10, 18, 16, 12, 28, 12, 28, 12, 28, 14, 14, 18, 12, 12, 20, 36]);
+  widths(ws, [10, 10, 16, 24, 10, 12, 12, 10, 16, 22, 10, 18, 16, 12, 28, 12, 28, 12, 28]);
 }
 
 function starred(stars, id) {

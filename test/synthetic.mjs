@@ -386,5 +386,5 @@ const dailyAdded = combined.orders.filter(r=>r.orderSource==='奔强外发');
 assert.equal(dailyAdded.length,2);
 assert.equal(dailyAdded[0].days.length,3);
 assert.equal(dailyAdded[0].days[0].date,'2026-11-11');
-assert.equal(dailyAdded[0].days[2].text,'捷德:钻孔 10');
+assert.equal(dailyAdded[0].days[2].text,'钻孔');
 assert.equal(buildReport(extRecords,{asOf:'2026-11-12'}).orderRows.filter(r=>r.orderSource==='奔强外发').length,0);
