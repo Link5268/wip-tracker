@@ -2,7 +2,6 @@
 // a higher number moved forward, the same number did not move, a lower number
 // moved backward. A name missing from that supplier's list is unordered.
 
-import { externalOrderRows } from "./externalOrders.js";
 import { JIEDE_NAMES, catalogsFrom, compareBySequence, sequenceLabel } from "./processOrder.js";
 
 export const STEP_ORDER = JIEDE_NAMES;
@@ -11,7 +10,7 @@ const ORDER_MAP = new Map(STEP_ORDER.map((name, i) => [name, i + 1]));
 
 export const BQ_TYPES = ["有变化", "无进度", "已出WIP", "今日新增"];
 export const MODEL_TYPES = ["有变化", "工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增"];
-export const ORDER_TYPES = ["有变化", "工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增", "未在WIP", "历史不足"];
+export const ORDER_TYPES = ["有变化", "工序推进", "无进度", "工序回退", "工序变化(顺序未知)", "已出WIP", "今日新增", "未在WIP"];
 
 export function clean(value) {
   if (value == null) return "";
@@ -703,9 +702,8 @@ export function buildReport(records, options = {}) {
     orderRows.push(orderRow(order, "捷德", type, (matches[latestDate] && matches[latestDate].how) || "未匹配", dayCells, asOf, latest && latest.present ? (latest.detail || latest.text) : "", supplierDates, latest && latest.present ? sequenceLabel(latest.steps, catalogs["捷德"]) : "", catalogs["捷德"]));
   }
 
-  const result = {
+  return {
     asOf,
-    rangeFrom: from, rangeTo: to,
     windowDates,
     bqDates: bq.dates,
     jdDates: jd.dates,
@@ -721,10 +719,6 @@ export function buildReport(records, options = {}) {
     bqOrderTotal: (bqOrders && bqOrders.orders.length) || 0,
     jdOrderTotal: (jdOrders && jdOrders.orders.length) || 0,
   };
-  const external = externalOrderRows(capped, result, options.catalogs);
-  result.orderRows.push(...external);
-  result.dailyStats = dailyStats(result.orderRows, catalogs);
-  return result;
 }
 
 function backfillSummary(day) {
@@ -784,7 +778,7 @@ function dailyStats(orderRows, catalogs) {
       const current = row.dayCells[date];
       const previous = index > 0 ? row.dayCells[dates[index - 1]] : null;
       const type = stepVerdict(
-        row.wipSupplier || row.supplier,
+        row.supplier,
         previous && previous.steps,
         current && current.steps,
         !!(previous && previous.present),

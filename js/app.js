@@ -1,4 +1,3 @@
-import { threeDayStatus } from "./externalOrders.js";
 import { buildReport, compareFocus, dueBucket, MODEL_TYPES, ORDER_TYPES } from "./logic.js";
 import { parseWorkbook } from "./parse.js";
 import { buildFocusWorkbook, buildStatsWorkbook, workbookBytes } from "./export.js";
@@ -296,7 +295,7 @@ async function ingest(fileList) {
       const buffer = await file.arrayBuffer();
       const parsed = parseWorkbook(buffer, file.name);
       if (!parsed.records.length) {
-        state.log.push({ kind: "bad", text: `${file.name}：没认出是捷德/奔强 WIP、环祥订单或奔强外发订单表。` });
+        state.log.push({ kind: "bad", text: `${file.name}：没认出是捷德/奔强的 WIP 或伯仁订单表。` });
         continue;
       }
       const hash = await sha256(buffer);
@@ -304,7 +303,7 @@ async function ingest(fileList) {
         record.id = parsed.records.length > 1 ? `${hash}:${record.supplier}:${record.kind}:${record.subtype}:${record.sheetName}` : hash;
         record.importedAt = new Date().toISOString();
         await putFile(record);
-        const label = record.kind === "external-orders" ? `奔强外发订单 ${record.rowCount} 行` : record.kind === "system-orders" ? `环祥订单全量 ${record.rowCount} 行` : record.kind === "order"
+        const label = record.kind === "order"
           ? `${record.supplier}订单 ${record.rowCount} 行`
           : `${record.supplier} WIP ${record.subtype || ""} ${record.rowCount} 行`;
         const dateNote = record.date ? record.date : "日期未识别，请手改";
@@ -328,7 +327,7 @@ function viewImport(report) {
     <tr data-supplier="${esc(record.supplier)}" data-subtype="${esc(record.subtype || "")}" data-date="${esc(record.date || "")}" data-kind="${esc(record.kind)}">
       <td>${esc(record.filename)}</td>
       <td>${esc(record.supplier)}</td>
-      <td>${record.kind === "external-orders" ? "奔强外发订单" : record.kind === "system-orders" ? "环祥订单全量" : record.kind === "order" ? "订单" : `WIP ${esc(record.subtype || "")}`}</td>
+      <td>${record.kind === "order" ? "订单" : `WIP ${esc(record.subtype || "")}`}</td>
       <td>${record.rowCount}</td>
       <td><input data-date-for="${esc(record.id)}" type="date" value="${esc(record.date || "")}" aria-label="修改 ${esc(record.filename)} 的日期"></td>
       <td>${esc(sourceLabel(record.dateSource))}</td>
@@ -337,7 +336,7 @@ function viewImport(report) {
   return `<div class="stack">
     <section class="drop" id="drop">
       <h2>把今天的原始表拖到这里</h2>
-      <p>捷德 310 WIP、奔强 y099 / Y100、环祥订单表、奔强外发订单表，.xls 和 .xlsx 都可以。同一天的 y099 和 Y100 会合成一份奔强 WIP。</p>
+      <p>捷德 310 WIP、奔强 y099 / Y100、伯仁订单表，.xls 和 .xlsx 都可以。同一天的 y099 和 Y100 会合成一份奔强 WIP。</p>
       <label class="file-btn">选择文件<input id="picker" type="file" multiple accept=".xls,.xlsx,.xlsm,.xlsb,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
     </section>
     <section class="card">
@@ -364,30 +363,24 @@ function viewDays(report) {
       <td>${starButton(row)}</td>
       <td>${tag(row.type)}</td>
       <td>${row.urgentFlag ? `<b class="urg">${esc(row.urgent)}</b>` : ""}</td>
-      <td>${esc(row.orderSource || "环祥订单")}</td>
       <td>${esc(row.supplier)}</td>
       <td>${esc(row.prodNo)}</td>
-      <td>${esc(row.batch || "")}</td>
-      <td>${esc(row.outQty || "")}</td>
-      <td>${esc(row.recovered || "")}</td>
-      <td>${esc(row.shortage || "")}</td>
       <td>${esc(row.factoryCode)}</td>
       <td>${esc(row.custModel)}</td>
       <td>${esc(row.status)}</td>
       <td class="${row.dueDays != null && row.dueDays < 0 ? "late" : ""}">${esc(row.due)}</td>
       <td>${dueText(row.dueDays)}</td>
-      <td title="${esc(row.matchDetail || "")}">${esc(row.how)}</td>
-      <td>${esc(row.threeDay || threeDayStatus(row.dayCells, row.supplierDates))}</td>
+      <td>${esc(row.how)}</td>
       ${days}
     </tr>`;
   }).join("");
-  const head = ["关注", "较上日", "加急", "订单来源", "供应商", "生产编号/型号", "生产批次", "外发数量", "已回收", "欠数", "厂编", "客户型号", "订单状态", "外发交期", "距交期", "匹配", "近三日变化", ...report.windowDates];
+  const head = ["关注", "较上日", "加急", "供应商", "生产编号", "厂编", "客户型号", "订单状态", "外发交期", "距交期", "匹配", ...report.windowDates];
   return `<div class="stack">
     ${filters("按生产编号、厂编或客户型号搜索")}
     ${statsTable(report)}
     <section class="card">
       <h2>最近 ${report.windowDates.length || 0} 个有 WIP 的日期</h2>
-      <p class="help">每个订单或外发批次一行，订单来源标明环祥订单或奔强外发。近三日记录相同只表示报表工序相同。奔强只看工序名：和上一日相同是无进度，不同是有变化。捷德按顺序号：更大是工序推进，相同是无进度，更小是工序回退，对不上顺序表是工序变化(顺序未知)。☆ 标成「我关注的」。</p>
+      <p class="help">每个订单一行。奔强只看工序名：和上一日相同是无进度，不同是有变化。捷德按顺序号：更大是工序推进，相同是无进度，更小是工序回退，对不上顺序表是工序变化(顺序未知)。☆ 标成「我关注的」。</p>
       <div class="legend">${ORDER_TYPES.map((type) => tag(type)).join("")}</div>
     </section>
     <div class="table-wrap">${table(head, rows || `<tr><td colspan="${head.length}">没有符合筛选的订单。</td></tr>`)}</div>
@@ -522,7 +515,7 @@ function viewFocus(report) {
     <section class="card filters">
       <label class="field">客户
         <select id="focus-supplier">
-          ${["全部", "环祥", "奔强", "捷德"].map((item) => `<option ${item === state.focusSupplier ? "selected" : ""}>${item}</option>`).join("")}
+          ${["全部", "奔强", "捷德"].map((item) => `<option ${item === state.focusSupplier ? "selected" : ""}>${item}</option>`).join("")}
         </select>
       </label>
       <label class="field">范围
@@ -855,7 +848,7 @@ function dailyPanel(report) {
   ];
   return `<section class="card stack">
     <h2>生成日报 Excel</h2>
-    <p class="help">导入环祥订单、奔强外发订单及最多三天的 WIP 后，下载的工作簿中「订单WIP进度」会将两份订单放在同一张表，每条订单显示三天工序和进度。日期用于选择 WIP 截止日，奔强订单取最新导入版本。文件在本机生成，不会上传。</p>
+    <p class="help">导入最多连续三天的原始表后，点下面的按钮下载一份工作簿：今日原始 WIP、捷德和奔强合在一张表里的进度对比、以及合并后的订单匹配。文件在本机生成，不会上传。</p>
     <div class="filters">
       <label class="field">日期<input id="daily-date" type="date" value="${esc(date)}"></label>
       <button type="button" id="daily-one" ${date ? "" : "disabled"}>生成日报 Excel</button>
@@ -900,7 +893,7 @@ function filters(placeholder) {
   return `<section class="card filters">
     <label class="field">供应商
       <select id="supplier">
-        ${["全部", "环祥", "奔强", "捷德"].map((item) => `<option ${item === state.supplier ? "selected" : ""}>${item}</option>`).join("")}
+        ${["全部", "奔强", "捷德"].map((item) => `<option ${item === state.supplier ? "selected" : ""}>${item}</option>`).join("")}
       </select>
     </label>
     <label class="field">从<input id="date-from" type="date" value="${esc(state.dateFrom)}"></label>
@@ -919,7 +912,7 @@ function filters(placeholder) {
 }
 
 function filteredOrders(report) {
-  return report.orderRows.filter((row) => supplierOk(row.supplier) && typeOk(row.type) && hitQuery(row.prodNo, row.factoryCode, row.custModel, row.batch, row.orderSource));
+  return report.orderRows.filter((row) => supplierOk(row.supplier) && typeOk(row.type) && hitQuery(row.prodNo, row.factoryCode, row.custModel));
 }
 
 function filteredModels(report) {

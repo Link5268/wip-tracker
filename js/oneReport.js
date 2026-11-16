@@ -316,48 +316,6 @@ export function buildCombinedTables(records, date, catalogOverrides) {
     }
   }
 
-  // External orders are the current order book. The selected report date limits WIP snapshots,
-  // not the order-file creation date (an order file can be newer than historical WIP).
-  const latestBook = (kind) => records.filter(record => record.kind === kind)
-    .sort((a,b) => String(a.date || '').localeCompare(String(b.date || '')) || String(a.importedAt || '').localeCompare(String(b.importedAt || ''))).at(-1);
-  const externalBook = latestBook('external-orders');
-  const systemBook = latestBook('system-orders');
-  const modelKey = value => String(value || '').normalize('NFKC').trim().replace(/\s+/g,'').split('(')[0].toUpperCase();
-  for (const order of externalBook?.orders || []) {
-    let found = { entities: [], basis: '未在WIP', many: false, matched: false };
-    let supplier = '';
-    if (String(order.supplierName || '').includes('捷德')) {
-      supplier = '捷德';
-      found = matchOrder({custModel:order.model, outQty:order.outQty}, indexEntities(entities.filter(entity => entity.customer === supplier)));
-    } else if (String(order.supplierName || '').includes('环祥')) {
-      const candidates = (systemBook?.orders || []).filter(row => modelKey(row.custModel) && modelKey(row.custModel) === modelKey(order.model));
-      const exact = candidates.filter(row => String(row.orderQty || row.outQty || '') === String(order.outQty || ''));
-      const selected = exact.length ? exact : candidates;
-      if (selected.length === 1) {
-        const internal = selected[0];
-        supplier = ['奔强','捷德'].find(name => String(internal.supplierName || '').includes(name)) || '';
-        if (supplier) {
-          found = matchOrder(internal, indexEntities(entities.filter(entity => entity.customer === supplier)));
-          found.basis = found.matched ? `环祥订单候选 ${internal.prodNo}；${found.basis}` : `环祥订单候选 ${internal.prodNo}；未匹配WIP`;
-        } else found.basis = `环祥订单候选 ${internal.prodNo}；缺少对应供应商WIP`;
-      } else if (selected.length > 1) {
-        found.basis = '环祥同型号多单，待核对'; found.many = true;
-      } else found.basis = systemBook ? '未匹配环祥订单' : '缺少环祥订单表';
-    } else found.basis = '缺少对应供应商WIP';
-    const trail = orderTrail(found.entities);
-    const dates = trail.dates.length ? trail.dates : supplier === '捷德' ? jdDateList : supplier === '奔强' ? [...new Set([...y099.dates, ...y100.dates])].sort().slice(-3) : [];
-    const steps = trail.stepsByDate;
-    const current = dates.at(-1), previous = dates.at(-2);
-    const type = !found.matched ? '未在WIP' : dates.length < 2 ? '历史不足' : verdict(dates, steps, catalogs[supplier], supplier);
-    const days = [{date:'',text:''},{date:'',text:''},{date:'',text:''}];
-    dates.slice(-3).forEach((day,i,arr) => { days[3-arr.length+i] = {date:day, text:Object.hasOwn(steps,day) ? stepText(steps[day]) : '未匹配', seq:supplier === '捷德' && Object.hasOwn(steps,day) ? sequenceLabel(steps[day],catalogs[supplier]) : ''}; });
-    orders.push({customer:'奔强', orderSource:'奔强外发', source:order.supplierName || '', urgent:'', prodNo:order.batch || '', custModel:order.model || '',
-      qty:order.outQty || '', orderDate:order.orderDate || '', due:order.due || '', status:'', factoryCode:'', po:'',
-      basis:found.basis, many:found.many, type, setType:type, seqLabel:current && Object.hasOwn(steps,current) && supplier === '捷德' ? sequenceLabel(steps[current],catalogs[supplier]) : '',
-      wipQty:[...new Set(found.entities.map(entity => entity.qty).filter(Boolean))].join(' / '), days,
-      trackId:`奔强外发|${order.supplierName}|${order.model}|${order.batch}`});
-  }
-
   const raw = {
     捷德310: fileOnLatest(records, "捷德", "310", date),
     y099: fileOnLatest(records, "奔强", "y099", date),
