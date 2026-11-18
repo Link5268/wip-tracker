@@ -53,6 +53,11 @@ h1, h2, h3, p { margin: 0; }
   border: 0; background: transparent; color: #d7e6e1;
   padding: 10px 14px; border-radius: 10px 10px 0 0;
 }
+.tabs .batch-link {
+  align-self: flex-end; padding: 10px 14px; border-radius: 10px 10px 0 0;
+  color: #f6f3ec; background: #315e54; text-decoration: none; white-space: nowrap;
+}
+.tabs .batch-link:hover, .tabs .batch-link:focus-visible { background: #3b7064; }
 .tabs button.on { background: var(--bg); color: var(--ink); font-weight: 700; }
 main { padding: 18px; max-width: 1440px; margin: 0 auto; }
 .card {

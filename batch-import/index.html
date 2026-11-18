@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>WIP 批量导入 · 环祥货期跟踪</title>
+<link rel="stylesheet" href="page.css">
+</head>
+<body>
+<main>
+<header><div><a class="home-link" href="../">返回货期跟踪</a><h1>WIP 批量导入</h1></div><div class="top"><p>文件只保存在当前浏览器</p><button class="primary" id="export" disabled>导出 WPS 工作簿</button></div></header>
+<section class="cards" aria-label="导入文件">
+<div class="card" id="orderCard">
+<h2>订单总表</h2><p class="help">首次使用请选原始订单总表，订单有变动时替换。</p>
+<div class="controls"><label class="file-button">选择订单总表<input id="orderFile" type="file" accept=".xlsx"></label></div>
+<p class="file-line" id="orderName">尚未选择</p>
+</div>
+<div class="card" id="wipCard">
+<h2>每日 WIP</h2><p class="help">同一天选择 310、b002、y099、y100 四份原始报表。</p>
+<div class="controls"><div class="date"><label for="date">报表日期</label><input id="date" type="date" required></div><label class="file-button">选择四份 WIP<input id="wipFiles" type="file" accept=".xls,.xlsx" multiple></label><button id="import" disabled>导入</button></div>
+<p class="file-line" id="selected" hidden></p><div class="wip-dates" id="recentDates" aria-label="已导入日期"></div>
+</div>
+</section>
+<p class="message" id="message" role="status" aria-live="polite"></p>
+<section class="workspace" aria-label="订单和 WIP 结果">
+<div class="tabs"><nav role="tablist" aria-label="结果视图"><button type="button" role="tab" aria-selected="true" data-tab="orders">在线订单</button><button type="button" role="tab" aria-selected="false" data-tab="search">订单检索</button><button type="button" role="tab" aria-selected="false" data-tab="compare">WIP 对比</button><button type="button" role="tab" aria-selected="false" data-tab="audit">匹配复核</button></nav><p id="totals"></p></div>
+<form id="searchForm" class="search-form" hidden autocomplete="off">
+<label>生产编号<input name="prod" type="text"></label><label>客户型号<input name="model" type="text"></label><label>客户 PO<input name="po" type="text"></label><label>供应商厂编<input name="factory" type="text"></label>
+<button class="primary" type="submit">检索</button><button type="reset">清空</button>
+</form>
+<p class="summary" id="summary"></p>
+<div class="table-box" id="tableBox" tabindex="0"><table><thead><tr id="columns"></tr></thead><tbody id="items"></tbody></table></div>
+</section>
+</main>
+<script defer src="../vendor/xlsx.full.min.js"></script>
+<script defer src="../vendor/fflate.js"></script>
+<script defer src="core.js"></script>
+<script defer src="export.js"></script>
+<script defer src="ui.js"></script>
+</body></html>
