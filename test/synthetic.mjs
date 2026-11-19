@@ -9,7 +9,7 @@ import { buildCombinedTables } from "../js/oneReport.js";
 import XLSX from "../vendor/xlsx.full.min.js";
 import "../batch-import/core.js";
 
-const { compute, find, parseOrder, parseWip } = globalThis.Wip;
+const { compute, find, parseOrder, parseWip, putDay } = globalThis.Wip;
 const makeB002 = (status) => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
@@ -37,6 +37,23 @@ assert.deepEqual(b002.rows.map((row) => row.lastText), ["开料/待复核", "待
 assert.equal(b002.rows[1].firstText, "EQ中");
 assert.equal(b002.rows[1].state, "工序有变化");
 assert.equal(find(b002.queryRows, ["TEST-03"])[0].state, "工序未变");
+const older = putDay([], "2026-11-16", [makeB002("EQ中")]);
+const partialDays = putDay(older, "2026-11-17", [{source:"310",jobs:[]}]);
+const noB002 = compute(b002Orders, partialDays);
+assert.equal(noB002.rows[1].lastText, "");
+assert.equal(noB002.rows[1].reason, "最新日未导入 b002");
+assert.equal(noB002.rows[1].state, "最新日报表未导入");
+assert.deepEqual(noB002.compared.find(row=>row.factory==="TEST-02").when, ["EQ中","报表未导入"]);
+const late = putDay(partialDays, "2026-11-17", [makeB002("EQ中")]);
+assert.deepEqual(late[1].reports.map(report=>report.source), ["310","b002"]);
+assert.equal(compute(b002Orders, late).rows[1].state, "工序未变");
+const corrected = putDay(late, "2026-11-17", [makeB002("待工程审核")]);
+assert.equal(corrected[1].reports.length, 2);
+assert.equal(compute(b002Orders, corrected).rows[1].state, "工序有变化");
+const emptyReport = putDay(partialDays, "2026-11-17", [{source:"b002",jobs:[]}]);
+assert.equal(compute(b002Orders, emptyReport).rows[1].state, "最新未报");
+assert.equal(compute(b002Orders, putDay(putDay([], "2026-11-16", [{source:"310",jobs:[]}]), "2026-11-17", [makeB002("EQ中")])).rows[1].state, "前一日报表未导入");
+assert.throws(()=>putDay(late, "2026-11-17", [makeB002("EQ中"),makeB002("待工程审核")]), /每个来源最多一份/);
 
 const workbookBytes = (name, rows) => {
   const workbook = XLSX.utils.book_new();

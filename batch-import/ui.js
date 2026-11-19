@@ -42,7 +42,7 @@
   }
   function disableWhileBusy() {
     el('export').disabled = busy || !data?.order || !result?.dates.length;
-    el('import').disabled = busy || !el('date').value || pendingFiles.length !== 4;
+    el('import').disabled = busy || !el('date').value || !pendingFiles.length || pendingFiles.length > Wip.sources.length;
     for(const id of ['orderFile','wipFiles','date']) el(id).disabled = busy;
   }
   async function action(fn) {
@@ -55,7 +55,11 @@
   }
   function refresh() {
     el('orderName').textContent = data.orderName || '尚未选择';
-    el('recentDates').replaceChildren(...result.dates.map(value=>make('span',value)));
+    el('recentDates').replaceChildren(...data.days.map(day=>{
+      const saved = new Set(day.reports.map(report=>report.source));
+      const missing = Wip.sources.filter(source=>!saved.has(source));
+      return make('span',missing.length ? `${day.date} 缺 ${missing.join('、')}` : day.date);
+    }));
     el('totals').textContent = `${result.rows.length} 笔在线 · ${result.rows.filter(row=>row.lastText).length} 笔已回填 · ${result.rows.filter(row=>row.reason).length} 笔待复核`;
     render();
   }
@@ -72,10 +76,10 @@
     const common = row => [...Wip.identifiers(row),row.firstText,row.lastText,row.state];
     const auditRows = result.rows.filter(row=>row.reason);
     const views = {
-      orders: {head:[...basic,...latestCols],rows:result.rows.map(common),text:dates.length ? `Y 栏使用 ${dates.at(-1)} 的在制工序。` : '导入每日 WIP 后可查看在制工序。'},
+      orders: {head:[...basic,...latestCols],rows:result.rows.map(common),text:dates.length ? `Y 栏使用 ${dates.at(-1)} 已导入报表的工序。` : '导入每日 WIP 后可查看在制工序。'},
       search: {head:[...basic,...latestCols,'来源'],rows:terms.some(Boolean) ? Wip.find(result.queryRows,terms).map(row=>[...common(row),row.type]) : [],text:'任填一项或多项，命中任一完整字段值即可检索。'},
       compare: {head:['报表','投产单号',...basic,...dates,'近两日变化'],rows:result.compared.map(row=>[row.source,row.job,...Wip.identifiers(row),...row.when,row.state]),text:'红色表示最近两份报表都列有该投产单，且工序未变。'},
-      audit: {head:['订单原行',...basic,'当前结果','可复核的 WIP 来源'],rows:auditRows.map(row=>[row.row,...Wip.identifiers(row),row.reason,(row.notes.length?row.notes:row.before).map(j=>`${j.source} 第 ${j.row} 行 ${j.factory}`).join('\n')]),text:'核对 Y 栏为空的订单，可按原行号回查订单总表。'}
+      audit: {head:['订单原行',...basic,'当前结果','可复核的 WIP 来源'],rows:auditRows.map(row=>[row.row,...Wip.identifiers(row),row.reason,(row.notes.length?row.notes:row.before).map(j=>`${j.source} 第 ${j.row} 行 ${j.factory}`).join('\n')]),text:'核对未匹配或缺报表的订单，可按原行号回查订单总表。'}
     };
     const view = views[tab];
     el('searchForm').hidden = tab !== 'search';
@@ -84,7 +88,7 @@
     const body = el('items');
     if (!view.rows.length) {
       const tr = make('tr');
-      const empty = tab==='orders'&&!data.order ? '请选择原始订单总表' : tab==='compare'&&!dates.length ? '请选择同一天的四份 WIP' : tab==='search'&&!terms.some(Boolean) ? '输入要检索的字段值' : '无记录';
+      const empty = tab==='orders'&&!data.order ? '请选择原始订单总表' : tab==='compare'&&!dates.length ? '请选择同一天的 1–4 份 WIP' : tab==='search'&&!terms.some(Boolean) ? '输入要检索的字段值' : '无记录';
       const td = make('td', empty);
       td.className = 'empty'; td.colSpan = view.head.length; tr.appendChild(td);
       body.replaceChildren(tr);
@@ -130,7 +134,7 @@
   function selectWip(files) {
     pendingFiles = [...files];
     el('selected').hidden = !pendingFiles.length;
-    el('selected').textContent = pendingFiles.length === 4 ? pendingFiles.map(file=>file.name).join(' · ') : `已选 ${pendingFiles.length} 份，请一次选择当天四份 WIP。`;
+    el('selected').textContent = pendingFiles.length > Wip.sources.length ? `已选 ${pendingFiles.length} 份，每次最多选同一天的 4 份 WIP。` : pendingFiles.map(file=>file.name).join(' · ');
     disableWhileBusy();
   }
   el('wipFiles').addEventListener('change',event=>selectWip(event.target.files));
@@ -143,8 +147,11 @@
     }));
     const updates = Wip.putDay(data.days,date,reports);
     if(!updates.some(day=>day.date===date)) throw new Error('该日期早于已保留的最近三份报表。');
-    const replaced = data.days.some(day=>day.date===date);
-    await commit({...data,days:updates},`${date} 四份 WIP 已${replaced?'替换':'导入'}。`);
+    const saved = new Set(data.days.find(day=>day.date===date)?.reports.map(report=>report.source));
+    const added = reports.filter(report=>!saved.has(report.source)).map(report=>report.source);
+    const replaced = reports.filter(report=>saved.has(report.source)).map(report=>report.source);
+    const changes = [added.length ? `已导入 ${added.join('、')}` : '', replaced.length ? `已替换 ${replaced.join('、')}` : ''].filter(Boolean);
+    await commit({...data,days:updates},`${date} ${changes.join('，')}。`);
     el('wipFiles').value='';selectWip([]);
   }));
   el('export').addEventListener('click',()=>action(async()=>{

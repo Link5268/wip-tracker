@@ -134,10 +134,14 @@
 
   function putDay(days, date, reports) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0,10) !== date) throw new Error('请选择有效的 WIP 报表日期。');
-    if (reports.length !== 4 || !sources.every(source => reports.filter(report => report.source === source).length === 1)) {
-      throw new Error(`同一天需各导入一份 310、b002、y099、y100。已识别 ${reports.map(report => report.source).join('、') || '0 份'}。`);
+    const incoming = reports.map(report => report.source);
+    if (!incoming.length || incoming.some(source => !sources.includes(source)) || new Set(incoming).size !== incoming.length) {
+      throw new Error(`请选择 1–4 份 WIP，每个来源最多一份。已识别 ${incoming.join('、') || '0 份'}。`);
     }
-    return [...days.filter(day => day.date !== date), {date, reports}].sort((a, b) => a.date.localeCompare(b.date)).slice(-3);
+    const saved = days.find(day => day.date === date)?.reports || [];
+    const merged = new Map([...saved, ...reports].map(report=>[report.source, report]));
+    return [...days.filter(day => day.date !== date), {date, reports:sources.flatMap(source=>merged.has(source) ? [merged.get(source)] : [])}]
+      .sort((a, b) => a.date.localeCompare(b.date)).slice(-3);
   }
 
   function compatible(order, job) {
@@ -207,7 +211,9 @@
   }
 
   function snapshot(day, orders) {
-    const jobs = (day?.reports || []).flatMap(report => report.jobs);
+    const reports = day?.reports || [];
+    const coverage = new Set(reports.map(report=>report.source));
+    const jobs = reports.flatMap(report => report.jobs);
     const matched = new Map(), unconfirmed = new Map();
     for (const job of jobs) {
       const resolution = resolveJob(job, orders, jobs);
@@ -220,7 +226,7 @@
         unconfirmed.get(row).push(job);
       }
     }
-    return {jobs, matched, unconfirmed, byId: new Map(jobs.map(job=>[job.id,job]))};
+    return {coverage, jobs, matched, unconfirmed, byId: new Map(jobs.map(job=>[job.id,job]))};
   }
   function change(previous, latest, hasBoth) {
     if (!hasBoth) return '待两日报表';
@@ -236,6 +242,13 @@
   }
   const progress = jobs => jobs.map(stageText).filter(Boolean).join('+');
   const identifiers = record => fields.map(field => record[field]);
+  const missingReports = (snapshot, expected) => expected.filter(source=>!snapshot.coverage.has(source));
+  function reportChange(before, now, recent, missingBefore, missingNow) {
+    if (recent && missingBefore.length && missingNow.length) return '近两日报表不齐';
+    if (missingNow.length) return '最新日报表未导入';
+    if (recent && missingBefore.length) return '前一日报表未导入';
+    return change(before, now, recent);
+  }
   function compute(orders, days) {
     const snapshots = days.map(day => snapshot(day, orders));
     const latest = snapshots.at(-1) || snapshot(null, orders), previous = snapshots.at(-2) || snapshot(null, orders);
@@ -243,18 +256,28 @@
     const rows = orders.map(order => {
       const now = latest.matched.get(order.row) || [], before = previous.matched.get(order.row) || [];
       const notes = latest.unconfirmed.get(order.row) || [];
-      const reason = !days.length ? '' : now.length ? progress(now) ? '' : '已匹配，供应商未报工序' : !order.scope ? '未覆盖该供应商或缺供应商信息' : notes.length ? '有相同字段，订单归属待核' : before.length ? '前日报表有匹配，最新未报' : '最新报表无匹配';
+      const latestKnown = [...now,...before,...notes];
+      const known = latestKnown.length ? latestKnown : snapshots.at(-3)?.matched.get(order.row) || [];
+      const expected = known.length ? [...new Set(known.map(job=>job.source))] : sources.filter(source=>compatible(order,{source}));
+      const missingNow = days.length ? missingReports(latest,expected) : [];
+      const missingBefore = recent ? missingReports(previous,expected) : [];
+      const reason = !days.length ? '' : missingNow.length ? `最新日未导入 ${missingNow.join('、')}` : now.length ? progress(now) ? '' : '已匹配，供应商未报工序' : !order.scope ? '未覆盖该供应商或缺供应商信息' : notes.length ? '有相同字段，订单归属待核' : before.length ? '前日报表有匹配，最新未报' : '最新报表无匹配';
       const aliases = snapshots.flatMap(snap => (snap.matched.get(order.row) || []).flatMap(identifiers));
-      return {...order, now, before, notes, aliases, reason, state: change(before, now, recent), firstText: progress(before), lastText: progress(now), type:'在线订单'};
+      return {...order, now, before, notes, aliases, reason, state:reportChange(before,now,recent,missingBefore,missingNow), firstText:progress(before), lastText:progress(now), type:'在线订单'};
     });
     const assigned = new Set([...latest.matched.values(), ...previous.matched.values()].flat().map(job=>job.id));
     const compare = new Map();
     for (const snap of snapshots) for (const job of snap.jobs) compare.set(job.id, job);
     const compared = [...compare.values()].sort((a,b)=>a.source.localeCompare(b.source,'en',{numeric:true}) || a.factory.localeCompare(b.factory) || a.job.localeCompare(b.job)).map(job => {
       const now = latest.byId.get(job.id), before = previous.byId.get(job.id);
-      const state = change(before ? [before] : [], now ? [now] : [], recent);
+      const state = reportChange(before ? [before] : [], now ? [now] : [], recent,missingReports(previous,[job.source]),missingReports(latest,[job.source]));
       const aliases = snapshots.flatMap(snap => { const sameJob = snap.byId.get(job.id); return sameJob ? identifiers(sameJob) : []; });
-      return {...job, aliases, when:snapshots.map(snap => { const record=snap.byId.get(job.id); return record ? stageText(record) || '未报工序' : '未列入'; }), now:now ? [now] : [], before:before ? [before] : [], state: state === '两日均无匹配' ? '近两日未列入' : state,
+      const when = snapshots.map(snap => {
+        const record = snap.byId.get(job.id);
+        if (!snap.coverage.has(job.source)) return '报表未导入';
+        return record ? stageText(record) || '未报工序' : '未列入';
+      });
+      return {...job, aliases, when, now:now ? [now] : [], before:before ? [before] : [], state: state === '两日均无匹配' ? '近两日未列入' : state,
         lastText:stageText(now), firstText:stageText(before), type:'供应商 WIP'};
     });
     return {rows, compared, queryRows:[...rows, ...compared.filter(job => !assigned.has(job.id))], dates:days.map(day=>day.date)};

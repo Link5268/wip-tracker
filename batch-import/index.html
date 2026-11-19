@@ -17,8 +17,8 @@
 <p class="file-line" id="orderName">尚未选择</p>
 </div>
 <div class="card" id="wipCard">
-<h2>每日 WIP</h2><p class="help">同一天选择 310、b002、y099、y100 四份原始报表。</p>
-<div class="controls"><div class="date"><label for="date">报表日期</label><input id="date" type="date" required></div><label class="file-button">选择四份 WIP<input id="wipFiles" type="file" accept=".xls,.xlsx" multiple></label><button id="import" disabled>导入</button></div>
+<h2>每日 WIP</h2><p class="help">选择同一天的 1–4 份原始报表。缺少的报表可按原日期补导入。</p>
+<div class="controls"><div class="date"><label for="date">报表日期</label><input id="date" type="date" required></div><label class="file-button">选择 WIP<input id="wipFiles" type="file" accept=".xls,.xlsx" multiple></label><button id="import" disabled>导入</button></div>
 <p class="file-line" id="selected" hidden></p><div class="wip-dates" id="recentDates" aria-label="已导入日期"></div>
 </div>
 </section>
@@ -35,7 +35,7 @@
 </main>
 <script defer src="../vendor/xlsx.full.min.js"></script>
 <script defer src="../vendor/fflate.js"></script>
-<script defer src="core.js?v=p22-match"></script>
+<script defer src="core.js?v=partial-wip"></script>
 <script defer src="export.js"></script>
-<script defer src="ui.js"></script>
+<script defer src="ui.js?v=partial-wip"></script>
 </body></html>
