@@ -9,7 +9,7 @@ import { buildCombinedTables } from "../js/oneReport.js";
 import XLSX from "../vendor/xlsx.full.min.js";
 import "../batch-import/core.js";
 
-const { compute, find, parseWip } = globalThis.Wip;
+const { compute, find, parseOrder, parseWip } = globalThis.Wip;
 const makeB002 = (status) => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
@@ -37,6 +37,47 @@ assert.deepEqual(b002.rows.map((row) => row.lastText), ["开料/待复核", "待
 assert.equal(b002.rows[1].firstText, "EQ中");
 assert.equal(b002.rows[1].state, "工序有变化");
 assert.equal(find(b002.queryRows, ["TEST-03"])[0].state, "工序未变");
+
+const workbookBytes = (name, rows) => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), name);
+  return XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+};
+const orderHeader = [];
+for (const [col, label] of [[1,"生产编号"],[6,"客户型号"],[7,"客户PO"],[22,"供应商厂编"],[24,"今日WIP"]]) {
+  orderHeader[col] = label;
+}
+const p22Models = [
+  ["1011250_CG-NXS-IntCon_V22_PCBData", "PO-1", 3100],
+  ["93831221 REV03", "PO-2", 804],
+  ["M7528B02 REVB-OUT", "PO-3", 150],
+  ["GN-2602-2", "PO-4", 190],
+  ["OTHER V01", "PO-5", 190],
+  ["COLLISION V01", "PO-6", 190],
+  ["COLLISION V01", "PO-7", 190],
+];
+const p22OrderRows = p22Models.map(([model,po,amount],index) => {
+  const row = [];
+  row[1]=`ORDER-${index+1}`; row[6]=model; row[7]=po; row[13]="P22-捷德电子-环祥用"; row[15]=amount;
+  return row;
+});
+const p22Orders = parseOrder(XLSX,workbookBytes("在线订单",[orderHeader,...p22OrderRows]));
+const p22Report = parseWip(XLSX,workbookBytes("b002",[
+  ["投产单号","产品编号","客户型号","客户P/O.","客户物料编码","销售合同数量","开料","压合","钻孔"],
+  ["B2","TEST-02","93831221-REV03-OUT",null,null,804,null,12],
+  ["B3","TEST-03","M7528B02 REVB-OUT","PO-3","ORDER-3",150,null,null,14],
+  ["B4","TEST-04","GN-2602-2_261106",null,null,190,null,null,10],
+  ["B5","TEST-05","OTHER-V01-OUT","WRONG-PO",null,190,null,null,10],
+  ["B6","TEST-06","COLLISION-V01-OUT",null,null,190,null,12],
+  [null,null,null,"状态"],
+  [null,"TEST-01","1011250_CG-NXSIntCon_V22_PCBData","EQ中"],
+]),"b002.xlsx");
+const p22 = compute(p22Orders,[{date:"2026-11-19",reports:[p22Report]}]);
+assert.deepEqual(p22.rows.map(row=>row.lastText),["EQ中","压合","钻孔","","","",""]);
+assert.equal(p22.rows[4].reason,"有相同字段，订单归属待核");
+assert.equal(p22.rows[5].reason,"有相同字段，订单归属待核");
+const legacyReport = {...p22Report,jobs:p22Report.jobs.map(({quantities,...job})=>job)};
+assert.deepEqual(compute(p22Orders,[{date:"2026-11-19",reports:[legacyReport]}]).rows.map(row=>row.lastText),["EQ中","","钻孔","","","",""]);
 
 assert.equal(sameStepSet(["钻孔", "电镀"], ["电镀", "钻孔"]), true);
 assert.equal(classifyPresence(["钻孔"], ["电镀", "钻孔"], true, true), "工序推进");

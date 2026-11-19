@@ -9,6 +9,9 @@
   const stageText = job => !job ? '' : job.stages.join('/') || job.status || '';
   const sortedStages = job => [...job.stages].sort().join('\n') || job.status || '';
   const noFactory = value => /^P\d+$/.test(key(value));
+  const b002Model = value => key(value).replace(/[\s_.-]+/g, '');
+  const b002OutputModel = value => b002Model(key(value).replace(/[\s_.-]+OUT$/, ''));
+  const quantity = value => Number(asText(value).replaceAll(',', '')) || 0;
   const serial = value => {
     if (typeof value === 'number') return value;
     const valueText = asText(value);
@@ -38,9 +41,9 @@
       const vendorCode = key(vendor).match(/^P\d+/)?.[0] || '';
       const factoryScope = key(factory).match(/^Y(?:099|100)/)?.[0]?.toLowerCase();
       let scope = '';
-      if (vendorCode === 'P19' || key(factory) === 'P19') scope = 'P19';
+      if (vendorCode === 'P19' || vendorCode === 'P22' || key(factory) === 'P19') scope = 'P19';
       else if (vendorCode === 'P1' || (!vendorCode && factoryScope)) scope = factoryScope || 'P1';
-      return [{ row: index + 1, prod, model, po, vendor, factory, scope, stamp: serial(row[14]), old: asText(row[24]) }];
+      return [{ row: index + 1, prod, model, po, vendor, factory, scope, stamp: serial(row[14]), quantity: quantity(row[15]) || quantity(row[8]), old: asText(row[24]) }];
     });
   }
 
@@ -78,6 +81,7 @@
     const stampCol = col('下单时间');
     const jobCol = col('投产单号');
     const areaCol = col('客户ID');
+    const qtyCol = col('销售合同数量');
     const mainStatusCol = col('状态');
     const statusCols = [mainStatusCol, col('最新交期'), col('EQ状态')].filter(n => n >= 0);
     const excluded = /客户简称|面积|停留|备注|合计|实投|状态|完结|余数|差数|送货|交期|数量|暂停/;
@@ -118,6 +122,11 @@
       record.prod ||= prod;
       record.po ||= po;
       record.model ||= model;
+      const reportedQty = quantity(row[qtyCol]);
+      if (source === 'b002' && !inStatusSection && reportedQty > 0) {
+        record.quantities ||= [];
+        if (!record.quantities.includes(reportedQty)) record.quantities.push(reportedQty);
+      }
       groups.set(id, record);
     }
     return { source, name, jobs: [...groups.values()] };
@@ -164,6 +173,7 @@
       }
       return { ...link, score };
     }).filter(link => link.score > 0).sort((a, b) => b.score - a.score);
+    if (!ranked.length && job.source === 'b002') return resolveB002Model(job, links, jobs);
     if (!ranked.length) return {order: null, candidates: links.filter(x => x.prod || x.model || x.factory || x.po).map(x=>x.order.row)};
     const leading = ranked.filter(link => link.score === ranked[0].score);
     // Stronger identifiers can resolve ties before timestamps. A PO mismatch may still be a supplier PO on y100.
@@ -173,6 +183,27 @@
       if (dated.length && dated[0].minutes < 120.001 && (dated.length === 1 || dated[1].minutes - dated[0].minutes > 0.5)) return {order: dated[0].order, candidates: []};
     }
     return {order: null, candidates: leading.map(link => link.order.row)};
+  }
+
+  function resolveB002Model(job, links, jobs) {
+    const reported = b002Model(job.model);
+    const outputModel = b002OutputModel(job.model);
+    const normalized = links.filter(({order}) => {
+      const value = b002Model(order.model);
+      return value.length >= 5 && (value === reported || value === outputModel);
+    });
+    const eligible = normalized.filter(({order, conflict}) => {
+      if (conflict || job.prod && !same(job.prod, order.prod)) return false;
+      const sameModel = b002Model(order.model) === reported;
+      const matchingQuantity = job.quantities?.length === 1 && job.quantities[0] === order.quantity;
+      if (!sameModel && !matchingQuantity) return false;
+      if (sameModel && order.quantity && job.quantities?.length && !job.quantities.includes(order.quantity)) return false;
+      return !jobs.some(other => other.source === 'b002' && order.po && other.po && !same(order.po, other.po)
+        && b002OutputModel(other.model) === outputModel);
+    });
+    if (eligible.length === 1) return {order: eligible[0].order, candidates: []};
+    const candidates = links.filter(x => x.prod || x.model || x.factory || x.po || normalized.includes(x));
+    return {order: null, candidates: candidates.map(x=>x.order.row)};
   }
 
   function snapshot(day, orders) {
