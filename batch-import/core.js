@@ -78,22 +78,40 @@
     const stampCol = col('下单时间');
     const jobCol = col('投产单号');
     const areaCol = col('客户ID');
-    const statusCols = [col('状态'), col('最新交期'), col('EQ状态')].filter(n => n >= 0);
+    const mainStatusCol = col('状态');
+    const statusCols = [mainStatusCol, col('最新交期'), col('EQ状态')].filter(n => n >= 0);
     const excluded = /客户简称|面积|停留|备注|合计|实投|状态|完结|余数|差数|送货|交期|数量|暂停/;
     const limit = col('暂停');
     const stages = list ? [] : headers.slice(col('开料'), limit < 0 ? headers.length : limit)
       .map((label, i) => [label, i + col('开料')]).filter(([label]) => label && !excluded.test(label));
     const groups = new Map();
+    let footerStatusCol = -1;
     for (const [offset, row] of rows.slice(index + 1).entries()) {
+      if (source === 'b002' && !asText(row[jobCol]) && (!asText(row[factoryCol]) || same(row[factoryCol], '产品编号'))) {
+        const heading = row.findIndex(value => same(value, '状态'));
+        if (heading >= 0) {
+          footerStatusCol = heading;
+          continue;
+        }
+      }
       const factory = asText(row[factoryCol]);
       if (!factory || /^(合计|汇总|总计|小计)|产品编号|生产型号/.test(factory)) continue;
-      const model = asText(row[modelCol]), po = asPO(row[poCol]), prod = asText(row[prodCol]);
-      const stamp = serial(row[stampCol]);
-      const job = has310 ? row.slice(jobCol, areaCol).map(asText).find(v => /^JKTC/i.test(v)) || asText(row[jobCol]) : asText(row[jobCol]);
+      const inStatusSection = footerStatusCol >= 0;
+      const model = asText(row[modelCol]);
+      const po = inStatusSection ? '' : asPO(row[poCol]);
+      const prod = inStatusSection ? '' : asText(row[prodCol]);
+      const stamp = inStatusSection ? 0 : serial(row[stampCol]);
+      const job = inStatusSection ? '' : has310 ? row.slice(jobCol, areaCol).map(asText).find(v => /^JKTC/i.test(v)) || asText(row[jobCol]) : asText(row[jobCol]);
       const area = asText(row[areaCol]);
       const id = list ? groupKey([source, factory, po, stamp.toFixed(8)]) : groupKey(job ? [source, area, job, factory] : [source, area, factory, model, po]);
-      const rawStages = list ? [asText(row[col('工艺名称')])] : stages.filter(([, j]) => Number(row[j]) > 0).map(([label]) => label);
-      const status = statusCols.map(j => asText(row[j])).find(v => /^(EQ\s*(?:中|确认中|已完成|完成|待确认)|MI\s*(?:制作|中)|待投产|待处理|暂停|外发|待资料|工程确认)$/i.test(v)) || '';
+      const rawStages = inStatusSection ? [] : list ? [asText(row[col('工艺名称')])] : stages.filter(([, j]) => Number(row[j]) > 0).map(([label]) => label);
+      const explicitStatus = source === 'b002' ? row[inStatusSection ? footerStatusCol : mainStatusCol] : null;
+      if (typeof explicitStatus === 'string' && /[A-Z\u3400-\u9fff]/i.test(explicitStatus) && !/^(状态|N\/?A)$/i.test(key(explicitStatus))) {
+        rawStages.push(asText(explicitStatus));
+      }
+      // The b002 footer has its own layout. A status sharing the main table's PO column is never a PO.
+      if (inStatusSection && !rawStages.length) continue;
+      const status = inStatusSection ? '' : statusCols.map(j => asText(row[j])).find(v => /^(EQ\s*(?:中|确认中|已完成|完成|待确认)|MI\s*(?:制作|中)|待投产|待处理|暂停|外发|待资料|工程确认)$/i.test(v)) || '';
       const record = groups.get(id) || { id, source, job, prod, model, po, factory, stamp, stages: [], status: '', file: name, row: index + offset + 2 };
       for (const stage of rawStages) if (stage && !record.stages.some(label => same(label, stage))) record.stages.push(stage);
       record.status ||= status;

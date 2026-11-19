@@ -6,6 +6,37 @@ import { compareBySequence, defaultCatalog, itemsFromSheetRows, normalizeOp } fr
 import { parseBatch, searchOrders } from "../js/orderSearch.js";
 import { buildBackup, readBackup } from "../js/backup.js";
 import { buildCombinedTables } from "../js/oneReport.js";
+import XLSX from "../vendor/xlsx.full.min.js";
+import "../batch-import/core.js";
+
+const { compute, find, parseWip } = globalThis.Wip;
+const makeB002 = (status) => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    ["投产单号", "产品编号", "客户型号", "下单日期", "客户P/O.", "开料", "钻孔", "状态"],
+    ["TEST-JOB1", "TEST-01", "MODEL-A", null, "TEST-PO1", 10, null, "待复核"],
+    [],
+    [null, null, null, null, "状态"],
+    [null, "TEST-02", "MODEL-B", 46000, status, 999],
+    [null, "TEST-03", "MODEL-C", 46000, "EQ中"],
+    [null, "TEST-04", "MODEL-D", 46000, null, 999],
+  ]), "b002");
+  return parseWip(XLSX, XLSX.write(workbook, { bookType: "biff8", type: "array" }), "b002.xls");
+};
+const b002Orders = [1, 2, 3].map((n) => ({
+  row: n + 1, prod: `ORDER-${n}`, factory: `TEST-0${n}`, scope: "P19",
+  model: `MODEL-${"ABC"[n - 1]}`, po: `TEST-PO${n}`,
+}));
+const b002 = compute(b002Orders, [
+  { date: "2026-11-16", reports: [makeB002("EQ中")] },
+  { date: "2026-11-17", reports: [makeB002("待工程审核")] },
+]);
+assert.equal(b002.compared.length, 3);
+assert.equal(b002.compared.find((row) => row.factory === "TEST-02").po, "");
+assert.deepEqual(b002.rows.map((row) => row.lastText), ["开料/待复核", "待工程审核", "EQ中"]);
+assert.equal(b002.rows[1].firstText, "EQ中");
+assert.equal(b002.rows[1].state, "工序有变化");
+assert.equal(find(b002.queryRows, ["TEST-03"])[0].state, "工序未变");
 
 assert.equal(sameStepSet(["钻孔", "电镀"], ["电镀", "钻孔"]), true);
 assert.equal(classifyPresence(["钻孔"], ["电镀", "钻孔"], true, true), "工序推进");
