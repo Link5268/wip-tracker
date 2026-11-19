@@ -199,6 +199,15 @@
     const names = ['订单检索','WIP对比','匹配复核'];
     const writers = [writeSearch,writeCompare,writeAudit];
     for (const [i,name] of names.entries()) {
+      const originalLayout = reportLayout(i);
+      writers[i](originalLayout,result,styles);
+      const existing = direct(sheets,'sheet').find(sheet=>sheet.getAttribute('name') === name);
+      if (existing) {
+        const reference = resolve(existing.getAttributeNS(r,'id'));
+        const path = packagePath(reference.getAttribute('Target'));
+        put(zip,path,originalLayout);
+        continue;
+      }
       max++;
       let sequence = max;
       while (zip[`xl/worksheets/sheet${sequence}.xml`]) sequence++;
@@ -206,8 +215,6 @@
       let relIndex = 1;
       while (resolve('rId'+relIndex)) relIndex++;
       const id = 'rId'+relIndex;
-      const originalLayout = reportLayout(i);
-      writers[i](originalLayout,result,styles);
       put(zip,'xl/'+filename,originalLayout);
       const sheet = make(sheets,'sheet',{name,sheetId:max});
       sheet.setAttributeNS(r,'r:id',id);

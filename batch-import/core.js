@@ -29,7 +29,6 @@
     const workbook = lib.read(bytes, {type: 'array'});
     const sheet = workbook.Sheets['在线订单'];
     if (!sheet) throw new Error('订单总表中找不到「在线订单」工作表。');
-    if (['订单检索', 'WIP对比', '匹配复核'].some(name => workbook.SheetNames.includes(name))) throw new Error('请选择日常更新的原始订单总表。');
     const records = getRows(lib, sheet);
     if (!records[0] || !same(records[0][1], '生产编号') || !same(records[0][6], '客户型号') || !same(records[0][7], '客户PO') || !same(records[0][22], '供应商厂编') || !/WIP|工序/.test(key(records[0][24]))) {
       throw new Error('在线订单的 B、G、H、W 或 Y 栏与原表结构不一致。');

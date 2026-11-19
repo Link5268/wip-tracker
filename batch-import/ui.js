@@ -88,7 +88,7 @@
     const body = el('items');
     if (!view.rows.length) {
       const tr = make('tr');
-      const empty = tab==='orders'&&!data.order ? '请选择原始订单总表' : tab==='compare'&&!dates.length ? '请选择同一天的 1–4 份 WIP' : tab==='search'&&!terms.some(Boolean) ? '输入要检索的字段值' : '无记录';
+      const empty = tab==='orders'&&!data.order ? '请选择含「在线订单」的订单总表' : tab==='compare'&&!dates.length ? '请选择同一天的 1–4 份 WIP' : tab==='search'&&!terms.some(Boolean) ? '输入要检索的字段值' : '无记录';
       const td = make('td', empty);
       td.className = 'empty'; td.colSpan = view.head.length; tr.appendChild(td);
       body.replaceChildren(tr);

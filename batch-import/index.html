@@ -12,7 +12,7 @@
 <header><div><a class="home-link" href="../">返回货期跟踪</a><h1>WIP 批量导入</h1></div><div class="top"><p>文件只保存在当前浏览器</p><button class="primary" id="export" disabled>导出 WPS 工作簿</button></div></header>
 <section class="cards" aria-label="导入文件">
 <div class="card" id="orderCard">
-<h2>订单总表</h2><p class="help">首次使用请选原始订单总表，订单有变动时替换。</p>
+<h2>订单总表</h2><p class="help">选择含「在线订单」的 .xlsx，订单有变动时重新导入。</p>
 <div class="controls"><label class="file-button">选择订单总表<input id="orderFile" type="file" accept=".xlsx"></label></div>
 <p class="file-line" id="orderName">尚未选择</p>
 </div>
@@ -35,7 +35,7 @@
 </main>
 <script defer src="../vendor/xlsx.full.min.js"></script>
 <script defer src="../vendor/fflate.js"></script>
-<script defer src="core.js?v=partial-wip"></script>
-<script defer src="export.js"></script>
-<script defer src="ui.js?v=partial-wip"></script>
+<script defer src="core.js?v=order-reimport"></script>
+<script defer src="export.js?v=order-reimport"></script>
+<script defer src="ui.js?v=order-reimport"></script>
 </body></html>
