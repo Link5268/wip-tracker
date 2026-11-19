@@ -60,7 +60,7 @@
       const missing = Wip.sources.filter(source=>!saved.has(source));
       return make('span',missing.length ? `${day.date} 缺 ${missing.join('、')}` : day.date);
     }));
-    el('totals').textContent = `${result.rows.length} 笔在线 · ${result.rows.filter(row=>row.lastText).length} 笔已回填 · ${result.rows.filter(row=>row.reason).length} 笔待复核`;
+    el('totals').textContent = `${result.rows.length} 笔在线 · ${result.rows.filter(row=>row.exportText).length} 笔已回填 · ${result.rows.filter(row=>row.reason).length} 笔待复核`;
     render();
   }
   function make(name, content) {
@@ -79,7 +79,7 @@
       orders: {head:[...basic,...latestCols],rows:result.rows.map(common),text:dates.length ? `Y 栏使用 ${dates.at(-1)} 已导入报表的工序。` : '导入每日 WIP 后可查看在制工序。'},
       search: {head:[...basic,...latestCols,'来源'],rows:terms.some(Boolean) ? Wip.find(result.queryRows,terms).map(row=>[...common(row),row.type]) : [],text:'任填一项或多项，命中任一完整字段值即可检索。'},
       compare: {head:['报表','投产单号',...basic,...dates,'近两日变化'],rows:result.compared.map(row=>[row.source,row.job,...Wip.identifiers(row),...row.when,row.state]),text:'红色表示最近两份报表都列有该投产单，且工序未变。'},
-      audit: {head:['订单原行',...basic,'当前结果','可复核的 WIP 来源'],rows:auditRows.map(row=>[row.row,...Wip.identifiers(row),row.reason,(row.notes.length?row.notes:row.before).map(j=>`${j.source} 第 ${j.row} 行 ${j.factory}`).join('\n')]),text:'核对未匹配或缺报表的订单，可按原行号回查订单总表。'}
+      audit: {head:['订单原行',...basic,'当前结果','可复核的 WIP 来源'],rows:auditRows.map(row=>[row.row,...Wip.identifiers(row),row.reason,(row.notes.length?row.notes:row.before).map(j=>[`${j.source} 第 ${j.row} 行`,j.factory,j.job].filter(Boolean).join(' ')).join('\n')]),text:'核对未匹配或缺报表的订单，可按原行号回查订单总表。'}
     };
     const view = views[tab];
     el('searchForm').hidden = tab !== 'search';

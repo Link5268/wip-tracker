@@ -91,10 +91,22 @@ const p22Report = parseWip(XLSX,workbookBytes("b002",[
 ]),"b002.xlsx");
 const p22 = compute(p22Orders,[{date:"2026-11-19",reports:[p22Report]}]);
 assert.deepEqual(p22.rows.map(row=>row.lastText),["EQ中","压合","钻孔","","","",""]);
-assert.equal(p22.rows[4].reason,"有相同字段，订单归属待核");
-assert.equal(p22.rows[5].reason,"有相同字段，订单归属待核");
+assert.equal(p22.rows[4].reason,"有相关记录，订单归属待核");
+assert.equal(p22.rows[5].reason,"有相关记录，订单归属待核");
 const legacyReport = {...p22Report,jobs:p22Report.jobs.map(({quantities,...job})=>job)};
 assert.deepEqual(compute(p22Orders,[{date:"2026-11-19",reports:[legacyReport]}]).rows.map(row=>row.lastText),["EQ中","","钻孔","","","",""]);
+const splitOrders = [
+  {row:1,prod:"INTERNAL",model:"FACTORY-X",po:"",factory:"P19",scope:"P19",vendor:"P19"},
+  {row:2,prod:"CLIENT",model:"CUSTOMER-X",po:"PO-X",factory:"FACTORY-X",scope:"P19",vendor:"P22-捷德",old:"开料"},
+  {row:3,prod:"CLIENT",model:"CUSTOMER-X",po:"PO-X",factory:"FACTORY",scope:"P19",vendor:"P22-捷德",old:"钻孔"},
+];
+const splitReport = {source:"b002",jobs:["开料","钻孔"].map((stage,index)=>({
+  id:`B${index}`, job:`B${index}`, source:"b002", prod:"CUSTOMER-X", model:"FACTORY-X", po:"PO-X", factory:"SUBCONTRACTOR-X", stages:[stage],
+}))};
+const split = compute(splitOrders,[{date:"2026-11-19",reports:[splitReport]}]);
+assert.deepEqual(split.rows.map(row=>row.lastText),["","整组 开料+钻孔","整组 开料+钻孔"]);
+assert.deepEqual(split.rows.map(row=>row.preserveOriginal),[false,true,true]);
+assert.deepEqual(split.rows.map(row=>row.exportText),["","",""]);
 
 assert.equal(sameStepSet(["钻孔", "电镀"], ["电镀", "钻孔"]), true);
 assert.equal(classifyPresence(["钻孔"], ["电镀", "钻孔"], true, true), "工序推进");

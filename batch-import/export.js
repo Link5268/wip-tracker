@@ -61,15 +61,16 @@
   function updateY(doc, result) {
     const rows = new Map(direct(first(doc.documentElement,'sheetData'), 'row').map(row=>[Number(row.getAttribute('r')),row]));
     for (const record of result.rows) {
+      if (record.preserveOriginal) continue;
       const row = rows.get(record.row);
       if (!row) throw new Error(`订单总表第 ${record.row} 行读取失败。`);
       const ref = 'Y' + record.row;
       const cells = direct(row, 'c');
       const original = cells.find(item=> item.getAttribute('r') === ref);
-      if (original) fillCell(original, record.lastText);
-      else if (record.lastText) {
+      if (original) fillCell(original, record.exportText);
+      else if (record.exportText) {
         const after = cells.find(item=> /^([A-Z]{2,}|Z)\d+$/.test(item.getAttribute('r')));
-        row.insertBefore(cell(row,ref,record.lastText), after || first(row,'extLst') || null);
+        row.insertBefore(cell(row,ref,record.exportText), after || first(row,'extLst') || null);
       }
     }
   }
@@ -169,8 +170,10 @@
     row(1,['订单原行','生产编号','客户型号','客户PO','当前结果','原表Y栏','供应商 / 厂编','可复核的 WIP 来源'],styles.head,26);
     if (!review.length) row(2,[null,'无待复核记录'],styles.body,22);
     review.forEach((o,i) => {
-      const reference = (o.notes.length ? o.notes : o.before).map(job=>`${job.source} 第 ${job.row} 行 ${job.factory}`).join('\n');
-      row(i+2,[o.row,o.prod,o.model,o.po,o.reason,o.old,[o.vendor,o.factory].filter(Boolean).join(' / '),reference],styles.body, reference.length > 32 || o.model.length > 31 ? 33 : 23);
+      const reference = (o.notes.length ? o.notes : o.before).map(job=>[`${job.source} 第 ${job.row} 行`,job.factory,job.job].filter(Boolean).join(' ')).join('\n');
+      const lines = reference.split('\n').length;
+      const height = Math.max(lines * 15 + 7, reference.length > 32 || o.model.length > 31 ? 33 : 23);
+      row(i+2,[o.row,o.prod,o.model,o.po,o.reason,o.old,[o.vendor,o.factory].filter(Boolean).join(' / '),reference],styles.body, Math.min(height, 180));
     });
   }
 

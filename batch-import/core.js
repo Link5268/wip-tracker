@@ -12,6 +12,7 @@
   const b002Model = value => key(value).replace(/[\s_.-]+/g, '');
   const b002OutputModel = value => b002Model(key(value).replace(/[\s_.-]+OUT$/, ''));
   const quantity = value => Number(asText(value).replaceAll(',', '')) || 0;
+  const isP22 = order => /^P22(?:\D|$)/.test(key(order.vendor));
   const serial = value => {
     if (typeof value === 'number') return value;
     const valueText = asText(value);
@@ -151,6 +152,21 @@
     const list = job.source.startsWith('y');
     const eligible = orders.filter(order => compatible(order, job));
     const links = eligible.map(order => ({order, prod: same(order.prod, job.prod), model: same(order.model, job.model), po: same(order.po, job.po), factory: !noFactory(order.factory) && same(order.factory, job.factory), conflict: !!(order.po && job.po && !same(order.po, job.po))}));
+    if (job.source === 'b002') {
+      // On these P22 orders the b002 material code is the order's customer model,
+      // and the b002 customer model is the order's factory code.
+      const split = links.filter(({order,po})=>isP22(order) && po && same(order.model,job.prod));
+      const verified = split.filter(({order})=>same(order.factory,job.model));
+      if (verified.length) {
+        const groups = new Set(verified.map(({order})=>key(order.prod)));
+        if (groups.size === 1) {
+          const group = split.filter(({order})=>groups.has(key(order.prod)));
+          if (group.length > 1) return {order:null, candidates:[], group:group.map(({order})=>order.row)};
+          return {order:verified[0].order,candidates:[]};
+        }
+        return {order:null,candidates:verified.map(({order})=>order.row)};
+      }
+    }
     const ranked = links.map(link => {
       const {order, prod, model, po, factory, conflict} = link;
       let score = 0;
@@ -205,7 +221,9 @@
         && b002OutputModel(other.model) === outputModel);
     });
     if (eligible.length === 1) return {order: eligible[0].order, candidates: []};
-    const candidates = links.filter(x => x.prod || x.model || x.factory || x.po || normalized.includes(x));
+    const datedModel = key(job.model).replace(/[\s_.-]+\d{6}$/, '');
+    const candidates = links.filter(x => x.prod || x.model || x.factory || x.po || normalized.includes(x)
+      || isP22(x.order) && datedModel !== key(job.model) && same(x.order.model,datedModel));
     return {order: null, candidates: candidates.map(x=>x.order.row)};
   }
 
@@ -213,9 +231,15 @@
     const reports = day?.reports || [];
     const coverage = new Set(reports.map(report=>report.source));
     const jobs = reports.flatMap(report => report.jobs);
-    const matched = new Map(), unconfirmed = new Map();
+    const matched = new Map(), unconfirmed = new Map(), grouped = new Map();
     for (const job of jobs) {
       const resolution = resolveJob(job, orders, jobs);
+      if (resolution.group) {
+        for (const row of resolution.group) {
+          if (!grouped.has(row)) grouped.set(row,[]);
+          grouped.get(row).push(job);
+        }
+      }
       if (resolution.order) {
         const row = resolution.order.row;
         if (!matched.has(row)) matched.set(row, []);
@@ -225,7 +249,7 @@
         unconfirmed.get(row).push(job);
       }
     }
-    return {coverage, jobs, matched, unconfirmed, byId: new Map(jobs.map(job=>[job.id,job]))};
+    return {coverage, jobs, matched, grouped, unconfirmed, byId: new Map(jobs.map(job=>[job.id,job]))};
   }
   function change(previous, latest, hasBoth) {
     if (!hasBoth) return '待两日报表';
@@ -254,17 +278,25 @@
     const recent = snapshots.length >= 2;
     const rows = orders.map(order => {
       const now = latest.matched.get(order.row) || [], before = previous.matched.get(order.row) || [];
+      const groupNow = latest.grouped.get(order.row) || [], groupBefore = previous.grouped.get(order.row) || [];
       const notes = latest.unconfirmed.get(order.row) || [];
-      const latestKnown = [...now,...before,...notes];
+      const latestKnown = [...now,...before,...groupNow,...groupBefore,...notes];
       const known = latestKnown.length ? latestKnown : snapshots.at(-3)?.matched.get(order.row) || [];
       const expected = known.length ? [...new Set(known.map(job=>job.source))] : sources.filter(source=>compatible(order,{source}));
       const missingNow = days.length ? missingReports(latest,expected) : [];
       const missingBefore = recent ? missingReports(previous,expected) : [];
-      const reason = !days.length ? '' : missingNow.length ? `最新日未导入 ${missingNow.join('、')}` : now.length ? progress(now) ? '' : '已匹配，供应商未报工序' : !order.scope ? '未覆盖该供应商或缺供应商信息' : notes.length ? '有相同字段，订单归属待核' : before.length ? '前日报表有匹配，最新未报' : '最新报表无匹配';
-      const aliases = snapshots.flatMap(snap => (snap.matched.get(order.row) || []).flatMap(identifiers));
-      return {...order, now, before, notes, aliases, reason, state:reportChange(before,now,recent,missingBefore,missingNow), firstText:progress(before), lastText:progress(now), type:'在线订单'};
+      const currentProgress = progress(now);
+      const corroboratedOld = isP22(order) && (order.old === '生产中' || notes.some(job=>same(stageText(job),order.old)));
+      const preserveOriginal = !currentProgress && !!order.old && (groupNow.length > 0 || corroboratedOld);
+      const reason = !days.length ? '' : missingNow.length ? `最新日未导入 ${missingNow.join('、')}` : groupNow.length ? '已匹配整组，投产单归属待核' : now.length ? currentProgress ? '' : '已匹配，供应商未报工序' : !order.scope ? '未覆盖该供应商或缺供应商信息' : notes.length ? '有相关记录，订单归属待核' : before.length || groupBefore.length ? '前日报表有匹配，最新未报' : '最新报表无匹配';
+      const aliases = snapshots.flatMap(snap => [...(snap.matched.get(order.row) || []),...(snap.grouped.get(order.row) || [])].flatMap(identifiers));
+      const state = reportChange([...before,...groupBefore],[...now,...groupNow],recent,missingBefore,missingNow);
+      const display = (direct, group) => [progress(direct), group.length ? `整组 ${progress(group)}`.trim() : ''].filter(Boolean).join(' · ');
+      return {...order, now, before:[...before,...groupBefore], notes:[...notes,...groupNow], aliases, reason:reason && preserveOriginal ? reason+'；沿用原表Y栏' : reason, state,
+        firstText:display(before,groupBefore), lastText:display(now,groupNow),
+        exportText:currentProgress, preserveOriginal, type:'在线订单'};
     });
-    const assigned = new Set([...latest.matched.values(), ...previous.matched.values()].flat().map(job=>job.id));
+    const assigned = new Set([...latest.matched.values(), ...previous.matched.values(), ...latest.grouped.values(), ...previous.grouped.values()].flat().map(job=>job.id));
     const compare = new Map();
     for (const snap of snapshots) for (const job of snap.jobs) compare.set(job.id, job);
     const compared = [...compare.values()].sort((a,b)=>a.source.localeCompare(b.source,'en',{numeric:true}) || a.factory.localeCompare(b.factory) || a.job.localeCompare(b.job)).map(job => {
